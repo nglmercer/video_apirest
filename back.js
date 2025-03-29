@@ -12,13 +12,7 @@ const config = {
   authorizationToken: '', // Se obtendrá durante la autenticación
   downloadUrl: '' // Se obtendrá durante la autenticación
 };
-/**00510e29cb92077ddbba38d84edcc2a8cfa9dec118 */
-/*keyID:
-1339fd1fc7f8
-keyName:
-Master Application Key
-applicationKey:
-00510e29cb92077ddbba38d84edcc2a8cfa9dec118*/
+
 // Función para autenticarse en Backblaze B2
 async function authorizeAccount() {
   try {
