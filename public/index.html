@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light"> {/* daisyUI theme */}
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Upload & HLS Player (Plyr + Tailwind)</title>
+
+    {/* Tailwind CSS CDN */}
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    {/* daisyUI CDN (after Tailwind) */}
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" type="text/css" />
+
+    {/* Plyr CSS CDN */}
+    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
+
+    <style>
+        /* Optional custom styles */
+        body {
+            padding: 1rem;
+        }
+        /* Ensure Plyr controls are visible and limit height */
+        .plyr__video-wrapper { /* Target Plyr's wrapper for height */
+             max-height: 60vh;
+        }
+        /* Ensure player container has some minimum height */
+        #playerContainer {
+             min-height: 200px;
+        }
+    </style>
+</head>
+<body class="bg-base-200">
+
+    <div class="container mx-auto p-4">
+
+        <div class="card bg-base-100 shadow-xl mb-6">
+            <div class="card-body">
+                <h1 class="card-title text-2xl mb-4">Video Upload</h1>
+                <form id="uploadForm">
+                    <div class="form-control w-full max-w-xs mb-4">
+                        <label class="label" for="videoFile">
+                            <span class="label-text">Select Video:</span>
+                        </label>
+                        <input type="file" id="videoFile" name="video" accept="video/*" required
+                               class="file-input file-input-bordered w-full max-w-xs" />
+                    </div>
+                    <button type="submit" class="btn btn-primary">Upload Video</button>
+                </form>
+                <div id="uploadStatus" class="alert mt-4" role="alert" style="display: none;">
+                    <span></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="card bg-base-100 shadow-xl mb-6">
+            <div class="card-body">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="card-title text-xl">Processed Videos</h2>
+                    <button id="refreshListBtn" class="btn btn-secondary btn-sm">Refresh List</button>
+                </div>
+                <ul id="videoList" class="menu bg-base-200 rounded-box">
+                </ul>
+            </div>
+        </div>
+
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body">
+                <h2 class="card-title text-xl mb-4">Video Player</h2>
+                <div id="playerContainer" class="bg-black rounded-lg overflow-hidden">
+                    <video id="videoPlayer" playsinline controls>
+                    </video>
+                </div>
+                <div id="playerStatus" class="alert mt-4" role="alert" style="display: none;">
+                    <span></span>
+                </div>
+            </div>
+        </div>
+        <iframe src="./player.html" frameborder="0"></iframe>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+
+
+    <script type="module" src="./index.js"></script>
+</body>
+</html>

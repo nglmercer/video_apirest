@@ -1,0 +1,1 @@
+export const API_BASE_URL = ''; // Asume que la API se sirve desde el mismo origen

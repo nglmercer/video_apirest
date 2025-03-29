@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video con Plyr</title>
+
+  <link rel="stylesheet" href="./plyr.css">
+  <style>
+    * {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    }
+  </style>
+</head>
+<body style="margin: 0; overflow: hidden;">
+  <video  crossorigin playsinline id="player" style="width: 100%; height: 100vh;"  poster="https://koinima.com/images/transparent.png" >
+
+    <source 
+       
+        type="application/x-mpegURL"
+      />
+  </video>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js"></script>
+  <script src="./plyr.js"></script>
+
+  <script type="module">
+    import { Parser } from 'https://cdn.jsdelivr.net/npm/m3u8-parser@7.2.0/+esm';
+    import JASSUB from "./jassub/jassub.es.js";
+    const jassubWorker = "/jassub/jassub-worker.js";
+    //https://cdn.jsdelivr.net/npm/jassub@1.7.18/dist/jassub-worker.wasm
+    const jassubWorkerWasm = "https://cdn.jsdelivr.net/npm/jassub@1.7.18/dist/jassub-worker.wasm";
+    // https://cdn.jsdelivr.net/npm/jassub@1.7.18/dist/jassub-worker-modern.wasm
+    const jassubWorkerWasmModern = "https://cdn.jsdelivr.net/npm/jassub@1.7.18/dist/jassub-worker-modern.wasm";
+
+    if ('WebAssembly' in window) {
+      console.log('WebAssembly es compatible');
+    }
+    const urlParams = new URLSearchParams(window.location.search);
+    //res/subtitulos/64470/v1?Authorization=
+    //|| "https://api.video.koinima.com/samples/sample.ass" //| "http://localhost:4200/sample.ass"; /sub/sub-64470.ass
+    //https://api.koinima.com/res/subtitulos/64470/v1?Authorization=e
+// Función para fetch y parsear un archivo M3U8
+const fetchSubJson = async (url) => {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+    const text = await response.json();
+    console.log("text",text);
+    return text;
+  } catch (error) {
+    console.error('Error fetching subtitles:', error);
+    return null;
+  }
+}
+const urlsubtittleTemplate = (id,token) => {
+    //https://api.koinima.com/res/subtitulos/
+    return `https://api.koinima.com/res/subtitulos/${id}/v1?Authorization=${token}`;
+}
+async function fetchnewsubtitles(url) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+    const text = await response.text();
+    return text;
+  } catch (error) {
+    console.error('Error fetching subtitles:', error);
+    return null;
+  }
+}
+//
+let lastsubs = null    
+const testsubtitleUrl =  urlParams.get('subtitle') || urlsubtittleTemplate(urlParams.get('capitulo'),urlParams.get('Authorization'));
+function getsubandset(subtitles) {
+  // buscar de un array el primero que tenga .url
+  console.log("subtitles",subtitles);
+  if (!subtitles) return;
+  if (!Array.isArray(subtitles)) return;
+  const subtitle = subtitles.find(subtitle => subtitle.ruta);
+  return subtitle.ruta;
+}
+const fetchM3U8 = async (url) => {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+    const text = await response.text();
+    const parser = new Parser();
+    parser.push(text);
+    parser.end();
+    console.log('M3U8 parsed successfully:', parser.manifest);
+    return parser.manifest;
+  } catch (error) {
+    console.error('Error fetching M3U8:', error);
+    return null;
+  }
+};
+
+// Función para obtener el texto completo de un archivo VTT sin filtrar nada
+const getFullVTTText = (vttText) => {
+  // Simplemente retornamos el texto tal cual, sin modificaciones
+  return vttText.trim();
+};
+
+// Función principal para obtener todo el contenido VTT sin borrar nada
+const fetchFullVTTContent = async (url) => {
+  // Fetch el M3U8 principal
+  const manifest = await fetchM3U8(url);
+  if (!manifest) return null;
+
+  let segmentUrls;
+  // Verificar si el M3U8 tiene segments directamente o subtitleTracks
+  if (manifest.segments && manifest.segments.length > 0) {
+    segmentUrls = manifest.segments.map((segment) => segment.uri);
+  } else if (manifest.subtitleTracks && manifest.subtitleTracks.length > 0) {
+    // Si tiene subtitleTracks, fetch el M3U8 de subtítulos
+    const subtitleUrl = manifest.subtitleTracks[0].url;
+    const subtitleManifest = await fetchM3U8(subtitleUrl);
+    if (!subtitleManifest) return null;
+    segmentUrls = subtitleManifest.segments.map((segment) => segment.uri);
+  } else {
+    console.error('No segments or subtitleTracks found');
+    return null;
+  }
+
+  // Fetch todos los segmentos en paralelo y obtener el texto completo
+  const vttContents = await Promise.all(
+    segmentUrls.map(async (segmentUrl) => {
+      const response = await fetch(segmentUrl);
+      if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+      const vttText = await response.text();
+      return getFullVTTText(vttText); // No filtramos nada
+    })
+  );
+
+  // Concatenar todo el contenido VTT con separadores claros
+  return vttContents.join('\n\n---\n\n'); // Separador entre segmentos para mayor claridad
+};
+
+// URL del M3U8 principal
+const asa = "https://api.koinima.com/res2/video/master/4990/65/64052/subs/esLa.m3u8?Authorization=3_20250325181115_bf0b549f5014047fbf54df12_36c5119acbf70e82e0b72a10600029e31a3bd2ac_005_20250325211115_0013_dnld";
+
+// Ejecutar y mostrar el resultado
+/* fetchFullVTTContent(asa)
+  .then((fullVTTContent) => {
+    console.log('Contenido completo de los archivos VTT:\n', fullVTTContent);
+  })
+  .catch((error) => {
+    console.error('Error al obtener el contenido VTT:', error);
+  }); */
+const isUrl = (str) => {
+    try {
+      new URL(str); // Intenta crear un objeto URL; si falla, no es una URL válida
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  //test to fetch
+
+
+  /*    const testsubtitleUrl = "/mdkepisode1.ass";
+      const subtitleContent = await fetchSubtitles(testsubtitleUrl);
+      this.initializeJASSUB(subtitleContent);*/
+      async function fetchSubtitles(url) {
+      if (!url) {
+        console.warn('No subtitle file specified');
+        return null;
+      }
+
+      try {
+        console.log('Fetching subtitles:', url);
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+          throw new Error(`Server response error: ${response.status}`);
+        }
+
+        const contentType = response.headers.get('content-type');
+        const isJson = contentType?.includes('application/json');
+        
+        const data = isJson ? await response.json() : await response.text();
+        const subtitleData = isJson ? (data.subtitleFile || data.subtitle) : data;
+        
+        console.log('Subtitles fetched successfully:', isJson ? 'JSON' : 'Text');
+        if (!subtitleData){
+          const urlTofetch = getsubandset(data);
+          return await fetchnewsubtitles(urlTofetch);
+        } else {
+          return subtitleData;
+        }
+      } catch (error) {
+        console.error('Error fetching subtitles:', error);
+        return null;
+      }
+    };
+    class VideoPlayer {
+    constructor() {
+        this.player = null;
+        this.hls = null;
+        this.jassub = null;
+        this.hasASSSubtitles = false;
+        this.video = document.querySelector("video");
+        
+        this.videoUrl = `https://api.koinima.com/res2/video/master/${urlParams.get('capitulo')}?Authorization=${urlParams.get('Authorization')}`;
+        this.localVideoUrl = `http://localhost:4200/processed/1743267212171-R_E_P_O____2025_03_23_2_10_46_a___m_/master.m3u8`;
+        
+        this.initialize();
+    }
+
+    initialize() {
+        this.video.getElementsByTagName("source")[0].setAttribute("src", this.localVideoUrl);
+        document.addEventListener("DOMContentLoaded", this.setupPlayer.bind(this));
+    }
+
+    setupPlayer() {
+        const source = this.video.getElementsByTagName("source")[0].src;
+
+        if (Hls.isSupported()) {
+            this.initializeHls(source);
+        } else {
+            this.initializeBasicPlayer();
+        }
+    }
+
+    initializeHls(source) {
+        this.hls = new Hls({});
+        this.hls.loadSource(source);
+        this.hls.subtitleTrack = 0;
+        this.hls.subtitleDisplay = false;
+        this.hls.attachMedia(this.video);
+        window.hls = this.hls;
+
+        this.hls.on(Hls.Events.MANIFEST_PARSED, this.handleManifestParsed.bind(this));
+    }
+
+    handleManifestParsed(event, data) {
+        const availableQualities = [0, ...this.hls.levels.map(l => l.height)];
+        const subtitleTracks = data.subtitles || data.subtitleTracks || [];
+        console.log("data",data)
+        const playerOptions = this.getPlayerOptions(data, availableQualities, subtitleTracks);
+        this.checkASSSubtitles(subtitleTracks);
+        console.log("playerOptions",playerOptions)
+        
+        this.player = new Plyr(this.video, playerOptions);
+        this.setupPlayerEvents();
+        
+        this.hls.audioTrack = playerOptions.audioTrack.options[0];
+        this.updateQuality(this.hls.levels[0].height);
+    }
+
+    async  checkASSSubtitles(subtitleTracks) {
+      this.initializeJASSUB(testsubtitleUrl)
+      this.hasASSSubtitles = true;
+      subtitleTracks.forEach(track => {
+          console.log("subtitleTracks",subtitleTracks)
+            if (track.url?.endsWith('.ass')) {
+                this.hasASSSubtitles = true;
+                this.initializeJASSUB(testsubtitleUrl);
+            }
+        });
+    }
+
+  async  initializeJASSUB(subtitleData) {
+    // si subtitleData is una promesa
+
+      try {
+        if (typeof subtitleData === 'string' && !isUrl(subtitleData)) {
+      console.log("subtitleTracks", typeof subtitleData)
+        this.jassub = new JASSUB({
+            video: this.video,
+            subContent: subtitleData,
+
+/*             subUrl: typeof subtitleTracks === "string" ? subtitleTracks : subtitleTracks.find(track => track.url.endsWith('.ass')).url,
+ */
+            workerUrl:jassubWorker,
+            wasmUrl: jassubWorkerWasm,
+            modernWasmUrl: jassubWorkerWasmModern,
+        });
+      } else if (typeof subtitleData === 'string' && isUrl(subtitleData)) {
+        const subtoString = await fetchSubtitles(subtitleData);
+        lastsubs = subtoString;
+        this.jassub = new JASSUB({
+          video: this.video,
+/*         subUrl: subtitleData,
+ */        subContent: subtoString,
+            workerUrl:jassubWorker,
+            wasmUrl: jassubWorkerWasm,
+            modernWasmUrl: jassubWorkerWasmModern,
+      });
+    } else {
+      console.log("subtitleData",subtitleData)
+    }
+    return this.jassub;
+    
+    } catch (error) {
+      console.error('Error al inicializar JASSUB:', error);
+
+      // Fallback: Si falla subUrl, intentamos fetch manual y usar subContent
+      if (isUrl(subtitleData)) {
+        console.log('Fallback: Intentando fetch manual para subContent');
+        try {
+          const response = await fetchSubtitles(subtitleData);
+          if (!response.ok) {
+            throw new Error('Error al hacer fetch de la URL');
+          }
+          const subtitleContent = await response.text();
+          jassub = new JASSUB({
+            video: videoElement,
+            subContent: subtitleContent,
+            workerUrl:jassubWorker,
+            wasmUrl: jassubWorkerWasm,
+            modernWasmUrl: jassubWorkerWasmModern,
+          });
+          console.log('JASSUB inicializado con subContent como fallback');
+          return jassub;
+        } catch (fetchError) {
+          console.error('Fallback también falló:', fetchError);
+          throw fetchError; // Si todo falla, lanzamos el error final
+        }
+      } else {
+        throw error; // Si no era una URL y falló, no hay más que hacer
+      }
+    }
+  }
+
+    getPlayerOptions(data, availableQualities, subtitleTracks) {
+        const audioTracks = this.hls.audioTrackController.tracks;
+        const availableAudioTracks = audioTracks.map((_, index) => index).slice(1);
+        const labelsTracks = Object.fromEntries(
+            audioTracks.slice(1).map((track, i) => [(i + 1).toString(), track.name])
+        );
+
+        return {
+            quality: {
+                default: 0,
+                options: availableQualities,
+                forced: true,
+                onChange: this.updateQuality.bind(this),
+            },
+            audioTrack: {
+                options: availableAudioTracks,
+                selected: availableAudioTracks[0],
+                onChange: this.handleAudioTrackChange.bind(this),
+                showUnrecognizedLabel: true,
+            },
+            i18n: {
+                'audioTrack': 'Idioma',
+                'quality': 'Calidad',
+                'captions': 'Subtitulos',
+                'captions.off': 'Desactivar subtitulos',
+                'captions.settings': 'Configuración de subtitulos',
+                'speed': 'Velocidad',
+                audioTrackLabel: labelsTracks,
+                qualityLabel: { 0: 'Auto' },
+            },
+            listeners: { captions: true },
+            storage: { enabled: true, key: 'plyr' },
+            captions: { active: true, update: true, language: 'auto' },
+            autoplay: true,
+            constrols: ['play-large', 'play', 'progress', 'current-time', 
+            'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen',
+          ],
+        };
+    }
+
+    setupPlayerEvents() {
+        this.player.on('languagechange', () => {
+            setTimeout(() => this.hls.subtitleTrack = this.player.currentTrack, 0);
+            const selectedTrack = (this.hls.subtitleTracks || [])[this.player.currentTrack];
+            if (this.jassub && selectedTrack?.url?.endsWith('.ass')) {
+                this.jassub.setTrackByUrl(selectedTrack.url);
+            }
+        });
+        this.hls.on(Hls.Events.LEVEL_SWITCHED, this.handleQualitySwitch.bind(this));
+        this.player.on('ready', () => {
+          console.log('Player ready');
+          this.updateQuality(0)
+          this.addCustomCaptionsButton();
+
+        });
+    }
+
+    handleQualitySwitch(event, data) {
+/*       console.log("data",data,event)*/        
+        const span = document.querySelector(".plyr__menu__container [data-plyr='quality'][value='0'] span");
+        const levelHeight = this.hls.levels[data.level].height;
+        span.innerHTML = this.hls.autoLevelEnabled ? `AUTO (${levelHeight}p)` : 'AUTO';
+    }
+
+    updateQuality(newQuality) {
+      console.log("newQuality",newQuality)
+        if (newQuality === 0) {
+            this.hls.currentLevel = -1;
+        } else {
+            this.hls.levels.forEach((level, index) => {
+                if (level.height === newQuality) {
+                    this.hls.currentLevel = index;
+                }
+            });
+        }
+    }
+
+    handleAudioTrackChange(newTrack) {
+        this.hls.audioTrack = parseInt(newTrack);
+    }
+
+    initializeBasicPlayer() {
+        this.player = new Plyr(this.video, {
+            captions: { active: true, update: true, language: 'en' },
+            autoplay: true,
+        });
+    }
+    addCustomCaptionsButton() {
+    // Buscamos el submenú de captions usando un selector más genérico
+    const captionsMenu = document.querySelector('.plyr__menu__container [role="menu"]');
+
+    if (captionsMenu) {
+        // Crear el botón toggle
+        const customToggle = document.createElement('button');
+        customToggle.setAttribute('type', 'button');
+        customToggle.classList.add('plyr__control');
+        // por defecto esta activado
+        customToggle.setAttribute('aria-pressed', 'true');
+        
+        // Estado inicial del toggle (desactivado por defecto)
+        let isCustomCaptionsActive = true
+        const textTemplate = `Subtítulos => `;
+         this.ToggleText(customToggle,textTemplate,isCustomCaptionsActive);
+
+        // Evento de clic para alternar el estado
+        customToggle.addEventListener('click', () => {
+            isCustomCaptionsActive = !isCustomCaptionsActive; // Cambia el estado
+           this.ToggleText(customToggle,textTemplate,isCustomCaptionsActive);
+
+            if (isCustomCaptionsActive) {
+              this.initializeJASSUB(lastsubs);
+                console.log('Subtítulos personalizados activados');
+            } else {
+                // Desactivar subtítulos personalizados
+                console.log('Subtítulos personalizados desactivados');
+                if (this.jassub) {
+                    this.jassub.freeTrack();
+                }
+            }
+        });
+
+        // Inserta el botón al final del contenedor
+        captionsMenu.appendChild(customToggle);
+    } else {
+        console.log('No se encontró el contenedor de captions. Asegúrate de que el menú esté renderizado.');
+    }
+}
+
+// Función para actualizar el texto del botón
+    ToggleText = (element,textTemplate,isCustomCaptionsActive) => {
+      const changetext = textTemplate + (isCustomCaptionsActive ? ' 🟢 ON' : ' 🔴 OFF');
+      if (element) {
+       element.innerHTML = changetext;
+      return element;
+    } else {
+      return changetext;
+    }
+    };
+}
+
+// Initialize the player
+const videoPlayer = new VideoPlayer();
+
+  </script>
+</body>
+
+</html>
