@@ -10,7 +10,7 @@ import { API_BASE_URL } from './config.js';
 export async function uploadVideo(formData) {
     console.log('[API] Enviando archivo...');
     try {
-        const response = await fetch(`${API_BASE_URL}/upload/b2`, {
+        const response = await fetch(`${API_BASE_URL}/b2/upload-hls`, {
             method: 'POST',
             body: formData,
         });
@@ -45,7 +45,7 @@ export async function uploadVideo(formData) {
 export async function fetchVideos() {
     console.log('[API] Obteniendo lista de videos...');
     try {
-        const response = await fetch(`${API_BASE_URL}/videos/b2`);
+        const response = await fetch(`${API_BASE_URL}/b2/videos`);
         console.log('[API] Respuesta de lista status:', response.status);
 
         if (!response.ok) {

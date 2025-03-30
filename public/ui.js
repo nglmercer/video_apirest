@@ -50,40 +50,81 @@ export function renderVideoList(videos, onPlayCallback) {
         videoList.innerHTML = '<li><a>No hay videos procesados aún.</a></li>';
         return;
     }
-
-    videos.forEach(video => {
-        if (!video.id || !video.masterPlaylistUrl) {
-            console.warn("[UI] Omitiendo video con datos faltantes:", video);
-            return; // Omitir esta entrada de video
-        }
-
-        const li = document.createElement('li');
-        const a = document.createElement('a'); // Usar ancla para ítem de menú
-        a.className = "flex justify-between items-center";
-        a.href = "#"; // Prevenir salto de página
-
-        const span = document.createElement('span');
-        span.textContent = `ID: ${video.id}`; // Mostrar ID
-
-        const playButton = document.createElement('button');
-        playButton.textContent = 'Play';
-        playButton.className = "btn btn-success btn-xs"; // Estilo botón DaisyUI
-        playButton.onclick = (e) => {
-            e.preventDefault(); // Prevenir comportamiento del enlace ancla
-            e.stopPropagation();
-            console.log("[UI] Botón Play pulsado para video:", video);
-            if (onPlayCallback) {
-                onPlayCallback(video.masterPlaylistUrl, video.id);
+    if (Array.isArray(videos)){
+        videos.forEach(video => {
+            if (!video.id || !video.masterPlaylistUrl) {
+                console.warn("[UI] Omitiendo video con datos faltantes:", video);
+                return; // Omitir esta entrada de video
             }
-        };
+            createVideoElement(video)
 
-        a.appendChild(span);
-        a.appendChild(playButton);
-        li.appendChild(a);
-        videoList.appendChild(li);
-    });
+        });
+    }else
+    {
+        console.log("videos else",videos)
+        videos.files.forEach(video => {
+            console.log(video)
+            if (video && video.contentType === "application/vnd.apple.mpegurl"){
+                createVideoElement(video,onPlayCallback)
+            }
+        })
+    }
 }
 
+async function getDownloadUrl(fileName, bucketName = "cloud-video-store") {
+    try {
+        //`/b2/hls-url/?filePath=${encodeURIComponent()}`
+        //
+      const response = await fetch(`/b2/download-url/${encodeURIComponent(fileName)}?bucket=${bucketName}`);
+      
+      if (!response.ok) {
+        throw new Error(`Error HTTP: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      if (!data.success) {
+        throw new Error(data.error || 'Error al obtener URL de descarga');
+      }
+      
+      return data.downloadUrl;
+      
+    } catch (error) {
+      console.error('Error al obtener URL de descarga:', error);
+      throw error;
+    }
+  }
+function createVideoElement(video,onPlayCallback){
+    const li = document.createElement('li');
+    const a = document.createElement('a'); // Usar ancla para ítem de menú
+    a.className = "flex justify-between items-center";
+    a.href = "#"; // Prevenir salto de página
+    const videoID = video.id || video.fileId;
+    const mastervideo = video.masterPlaylistUrl || video.downloadUrl;
+    const span = document.createElement('span');
+    span.textContent = `ID: ${mastervideo}`
+
+    const playButton = document.createElement('button');
+    playButton.textContent = 'Play';
+    playButton.className = "btn btn-success btn-xs"; // Estilo botón DaisyUI
+    playButton.onclick = async (e) => {
+        e.preventDefault(); // Prevenir comportamiento del enlace ancla
+        e.stopPropagation();
+        console.log("[UI] Botón Play pulsado para video:", video);
+        if (onPlayCallback) {
+        const urlTodownload = await getDownloadUrl(video.fileName)
+        console.log(urlTodownload)
+            
+            onPlayCallback(urlTodownload, videoID);
+
+        }
+    };
+
+    a.appendChild(span);
+    a.appendChild(playButton);
+    li.appendChild(a);
+    videoList.appendChild(li);
+}
 /**
  * Muestra un estado de carga en la lista de videos.
  */

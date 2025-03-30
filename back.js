@@ -145,7 +145,28 @@ async function listFiles(bucketId, startFileName = null, maxFileCount = 100) {
         return null;
     }
 }
+async function getDownloadUrlWithToken(fileName, bucketName = "cloud-video-store") {
+  try {
+    // Primero nos aseguramos de estar autenticados
+    if (!config.authorizationToken || !config.downloadUrl) {
+      const authSuccess = await authorizeAccount();
+      if (!authSuccess) {
+        throw new Error('No se pudo autenticar con Backblaze B2');
+      }
+    }
 
+    // Codificar el nombre del archivo para usarlo en la URL
+    const encodedFileName = encodeURIComponent(fileName);
+
+    // Construir la URL de descarga con el token de autorización
+    const downloadUrl = `${config.downloadUrl}/file/${bucketName}/${encodedFileName}?Authorization=${config.authorizationToken}`;
+    
+    return downloadUrl;
+  } catch (error) {
+    console.error('Error al generar URL de descarga:', error.message);
+    throw error;
+  }
+}
 
 // Ejemplo de uso (eliminado para exportación)
 /*
@@ -188,5 +209,6 @@ module.exports = {
   listFiles, // Nueva función para listar archivos
   getDownloadUrl: () => config.downloadUrl, // Para construir URLs de video
   getApiUrl: () => config.apiUrl, // Podría ser útil
-  getAuthToken: () => config.authorizationToken // Podría ser útil
+  getAuthToken: () => config.authorizationToken, // Podría ser útil
+  getDownloadUrlWithToken
 };

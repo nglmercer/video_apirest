@@ -2,19 +2,18 @@ require('dotenv').config(); // Cargar variables de entorno al inicio
 const express = require('express');
 const path = require('path');
 const cors = require('cors');
-const multer = require('multer'); // Para manejar subida de archivos
-const fs = require('fs'); // Usar fs normal, no promesas por ahora
-const b2 = require('./back.js'); // Importar módulo de Backblaze B2
+// Multer ya no se configura globalmente aquí, se maneja en cada router
+const fs = require('fs'); // Usar fs normal
+const b2 = require('./back.js'); // Importar módulo de Backblaze B2 (para autorización inicial)
 const morgan = require('morgan'); // Import morgan
-const ffmpeg = require('fluent-ffmpeg'); // Still needed for ffprobe in utils
+const ffmpeg = require('fluent-ffmpeg'); // Still needed for ffprobe in utils/hls
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 
 // Import utils and routes
-// Import VIDEOS_DIR from utils (now correctly relative to root)
-// PROCESSED_DIR will be defined locally in index.js for static serving
-const { ensureDirExists, VIDEOS_DIR } = require('./utils/hls');
-const uploadRoutes = require('./routes/upload');
-const videoRoutes = require('./routes/videos');
+const { ensureDirExists, VIDEOS_DIR } = require('./utils/hls'); // VIDEOS_DIR para asegurar directorio
+const uploadRoutes = require('./routes/upload'); // Ruta para subida local y conversión HLS
+const videoRoutes = require('./routes/videos'); // Ruta para listar videos HLS locales
+const b2Routes = require('./routes/b2.js'); // Nuevas rutas para Backblaze B2
 
 // Set ffmpeg path (needs to be done once)
 ffmpeg.setFfmpegPath(ffmpegPath);
@@ -32,98 +31,12 @@ app.use(morgan('dev')); // Add HTTP request logging ('dev' format is concise)
 
 // Serve static files
 app.use(express.static(PUBLIC_DIR)); // Serve frontend examples from public/
-app.use('/processed', express.static(PROCESSED_DIR_ROOT)); // Serve processed HLS videos from processed_videos/
+app.use('/processed', express.static(PROCESSED_DIR_ROOT)); // Servir videos HLS procesados localmente
 
 // --- API Routes ---
-// app.use('/upload', uploadRoutes); // Comentado - Usando /upload/b2 ahora
-// app.use('/videos', videoRoutes); // Comentado - Usando /videos/b2 ahora
-
-// --- Configuración de Multer para subida en memoria ---
-const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
-
-// --- Ruta para subir archivos a Backblaze B2 ---
-app.post('/upload/b2', upload.single('video'), async (req, res, next) => {
-    if (!req.file) {
-        return res.status(400).send('No file uploaded.');
-    }
-
-    // Guardar temporalmente el buffer en un archivo para b2.uploadFile
-    const tempDir = path.join(__dirname, 'temp_uploads');
-    const tempFilePath = path.join(tempDir, req.file.originalname);
-
-    try {
-        // Asegurarse que el directorio temporal existe
-        if (!fs.existsSync(tempDir)){
-            fs.mkdirSync(tempDir);
-        }
-        // Escribir el buffer al archivo temporal
-        fs.writeFileSync(tempFilePath, req.file.buffer);
-
-        console.log(`Archivo temporal creado en: ${tempFilePath}`);
-
-        // Subir a B2 usando la función refactorizada
-        const bucketId = process.env.B2_BUCKET_ID;
-        const fileName = req.file.originalname; // Usar el nombre original
-
-        const uploadResult = await b2.uploadFile(bucketId, fileName, tempFilePath);
-
-        // Eliminar el archivo temporal después de subirlo
-        fs.unlinkSync(tempFilePath);
-        console.log(`Archivo temporal eliminado: ${tempFilePath}`);
-
-
-        if (uploadResult) {
-            // Construir la URL de descarga (simplificada, puede necesitar ajustes)
-            const downloadUrl = `${b2.getDownloadUrl()}/file/${process.env.B2_BUCKET_NAME}/${encodeURIComponent(fileName)}`;
-            res.status(200).json({
-                message: 'File uploaded successfully to B2!',
-                fileInfo: uploadResult,
-                downloadUrl: downloadUrl
-            });
-        } else {
-            res.status(500).send('Failed to upload file to B2.');
-        }
-    } catch (error) {
-         // Asegurarse de eliminar el archivo temporal incluso si hay error
-        if (fs.existsSync(tempFilePath)) {
-            try {
-                fs.unlinkSync(tempFilePath);
-                console.log(`Archivo temporal eliminado tras error: ${tempFilePath}`);
-            } catch (unlinkError) {
-                console.error("Error eliminando archivo temporal tras error:", unlinkError);
-            }
-        }
-        console.error('Error during B2 upload:', error);
-        next(error); // Pasar el error al manejador de errores global
-    }
-});
-
-// --- Ruta para listar archivos/videos desde Backblaze B2 ---
-app.get('/videos/b2', async (req, res, next) => {
-    try {
-        const bucketId = process.env.B2_BUCKET_ID;
-        const listResult = await b2.listFiles(bucketId);
-
-        if (listResult && listResult.files) {
-            // Mapear los resultados para incluir la URL de descarga directa
-            const filesWithUrls = listResult.files.map(file => ({
-                ...file,
-                downloadUrl: `${b2.getDownloadUrl()}/file/${process.env.B2_BUCKET_NAME}/${encodeURIComponent(file.fileName)}`
-            }));
-
-            res.status(200).json({
-                files: filesWithUrls,
-                nextFileName: listResult.nextFileName // Para paginación futura
-            });
-        } else {
-            res.status(500).send('Failed to list files from B2.');
-        }
-    } catch (error) {
-        console.error('Error listing B2 files:', error);
-        next(error);
-    }
-});
+app.use('/upload', uploadRoutes);   // Ruta para subida local y conversión HLS
+app.use('/videos', videoRoutes);   // Ruta para listar videos HLS locales
+app.use('/b2', b2Routes);          // Rutas para interactuar con Backblaze B2 (/b2/upload, /b2/videos)
 
 
 // --- Basic Root Route (Optional) ---
@@ -156,13 +69,12 @@ const startServer = async () => {
         }
         console.log("Backblaze B2 authorization successful.");
 
-        // 2. Asegurar directorios (si aún son necesarios para otras funciones)
-        // await ensureDirExists(VIDEOS_DIR); // Comentado si solo usamos B2
-        // await ensureDirExists(PROCESSED_DIR_ROOT); // Comentado si solo usamos B2
-        // Asegurar directorio temporal para subidas
-        const tempDir = path.join(__dirname, 'temp_uploads');
+        // 2. Asegurar directorios necesarios al inicio
+        await ensureDirExists(VIDEOS_DIR); // Directorio para videos originales subidos localmente
+        await ensureDirExists(PROCESSED_DIR_ROOT); // Directorio para videos HLS procesados
+        const tempDir = path.join(__dirname, 'temp_uploads'); // Directorio temporal para subidas a B2
          if (!fs.existsSync(tempDir)){
-            fs.mkdirSync(tempDir);
+            fs.mkdirSync(tempDir, { recursive: true });
             console.log(`Created temporary upload directory: ${tempDir}`);
         }
 
@@ -171,9 +83,12 @@ const startServer = async () => {
         app.listen(PORT, () => {
             console.log(`Server listening on port ${PORT}`);
             console.log(`Frontend example: http://localhost:${PORT}/`);
-            console.log(`B2 Upload endpoint: POST http://localhost:${PORT}/upload/b2 (form-data field: 'videoFile')`);
-            console.log(`B2 List Videos endpoint: GET http://localhost:${PORT}/videos/b2`);
-            // console.log(`Access processed videos base URL: http://localhost:${PORT}/processed/`); // Comentado
+            console.log(`Local Upload & HLS endpoint: POST http://localhost:${PORT}/upload (form-data field: 'video')`);
+            console.log(`List Local HLS Videos endpoint: GET http://localhost:${PORT}/videos`);
+            console.log(`Access processed HLS videos base URL: http://localhost:${PORT}/processed/`);
+            console.log(`B2 Direct Upload endpoint: POST http://localhost:${PORT}/b2/upload (form-data field: 'videoFile')`);
+            console.log(`B2 HLS Upload endpoint: POST http://localhost:${PORT}/b2/upload-hls (form-data field: 'videoFile')`);
+            console.log(`B2 List Videos endpoint: GET http://localhost:${PORT}/b2/videos`);
         });
     } catch (error) {
         console.error("Failed to start server or authorize B2:", error);
