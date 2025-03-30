@@ -8,7 +8,7 @@ const b2 = require('./back.js'); // Importar módulo de Backblaze B2 (para autor
 const morgan = require('morgan'); // Import morgan
 const ffmpeg = require('fluent-ffmpeg'); // Still needed for ffprobe in utils/hls
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
-
+const axios = require("axios")
 // Import utils and routes
 const { ensureDirExists, VIDEOS_DIR } = require('./utils/hls'); // VIDEOS_DIR para asegurar directorio
 const uploadRoutes = require('./routes/upload'); // Ruta para subida local y conversión HLS
@@ -19,7 +19,7 @@ const b2Routes = require('./routes/b2.js'); // Nuevas rutas para Backblaze B2
 ffmpeg.setFfmpegPath(ffmpegPath);
 
 const app = express();
-const PORT = process.env.PORT || 4200;
+const PORT = process.env.PORT || 3000;
 
 // --- Define Root Paths ---
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -38,7 +38,30 @@ app.use('/upload', uploadRoutes);   // Ruta para subida local y conversión HLS
 app.use('/videos', videoRoutes);   // Ruta para listar videos HLS locales
 app.use('/b2', b2Routes);          // Rutas para interactuar con Backblaze B2 (/b2/upload, /b2/videos)
 
-
+app.get('/stream-resource/:videoId/:resourcePath(*)', async (req, res) => {
+    const { videoId, resourcePath } = req.params;
+    const backblazeBaseUrl = 'https://f005.backblazeb2.com/file/cloud-video-store/';
+    const resourceUrl = `${backblazeBaseUrl}${videoId}/${resourcePath}`; // Ejemplo: "video123/480p/playlist.m3u8"
+  
+    try {
+      const token = await b2.authorizeAccount();
+      const response = await axios.get(resourceUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        responseType: 'stream', // Para manejar .ts y otros flujos
+      });
+  
+      const contentType = resourceUrl.endsWith('.m3u8')
+        ? 'application/vnd.apple.mpegurl'
+        : 'video/mp2t'; // Para .ts
+      res.setHeader('Content-Type', contentType);
+      response.data.pipe(res);
+    } catch (error) {
+      console.error(`Error fetching resource ${resourceUrl}:`, error);
+      res.status(500).send('Error al procesar el recurso');
+    }
+  });
 // --- Basic Root Route (Optional) ---
 app.get('/', (req, res) => {
     // Send the index.html from the public directory
