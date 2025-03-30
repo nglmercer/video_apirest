@@ -41,10 +41,10 @@ app.use('/b2', b2Routes);          // Rutas para interactuar con Backblaze B2 (/
 app.get('/stream-resource/:videoId/:resourcePath(*)', async (req, res) => {
     const { videoId, resourcePath } = req.params;
     const backblazeBaseUrl = 'https://f005.backblazeb2.com/file/cloud-video-store/';
-    const resourceUrl = `${backblazeBaseUrl}${videoId}/${resourcePath}`; // Ejemplo: "video123/480p/playlist.m3u8"
-  
+    const token = await b2.getAuthToken();
+    const resourceUrl = `${backblazeBaseUrl}${videoId}/${resourcePath}?Authorization=`+token; // Ejemplo: "video123/480p/playlist.m3u8"
+    console.log("resourceUrl",resourceUrl)
     try {
-      const token = await b2.authorizeAccount();
       const response = await axios.get(resourceUrl, {
         headers: {
           Authorization: `Bearer ${token}`,
