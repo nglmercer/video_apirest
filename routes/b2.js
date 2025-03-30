@@ -332,5 +332,28 @@ router.get('/hls-url', async (req, res) => {
       });
     }
   });
+router.get('/stream-resource/:videoId/:resourcePath(*)', async (req, res) => {
+    const { videoId, resourcePath } = req.params;
+    const backblazeBaseUrl = 'https://f005.backblazeb2.com/file/cloud-video-store/';
+    const resourceUrl = `${backblazeBaseUrl}${videoId}/${resourcePath}`; // Ejemplo: "video123/480p/playlist.m3u8"
   
+    try {
+      const token = await b2.authorizeAccount();
+      const response = await axios.get(resourceUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        responseType: 'stream', // Para manejar .ts y otros flujos
+      });
+  
+      const contentType = resourceUrl.endsWith('.m3u8')
+        ? 'application/vnd.apple.mpegurl'
+        : 'video/mp2t'; // Para .ts
+      res.setHeader('Content-Type', contentType);
+      response.data.pipe(res);
+    } catch (error) {
+      console.error(`Error fetching resource ${resourceUrl}:`, error);
+      res.status(500).send('Error al procesar el recurso');
+    }
+  });
 module.exports = router;
