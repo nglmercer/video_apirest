@@ -61,9 +61,7 @@ export function renderVideoList(videos, onPlayCallback) {
         });
     }else
     {
-        console.log("videos else",videos)
         videos.files.forEach(video => {
-            console.log(video)
             if (video && video.contentType === "application/vnd.apple.mpegurl"){
                 createVideoElement(video,onPlayCallback)
             }

@@ -72,6 +72,7 @@ async function handleFetchVideoList() {
 
     try {
         const videos = await API.fetchVideos();
+        console.log('[Main] Lista de videos obtenida:', videos);
         // Pasar el callback `Player.loadVideo` a la función de renderizado
         UI.renderVideoList(videos, Player.loadVideo);
         // Limpiar estado solo si no hubo error al obtener la lista

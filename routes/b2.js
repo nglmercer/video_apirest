@@ -333,4 +333,94 @@ router.get('/hls-url', async (req, res) => {
     }
   });
 
+// --- Ruta para buscar archivos por prefijo ---
+// GET /b2/search/prefix?prefix=folder/
+router.get('/search/prefix', async (req, res, next) => {
+  try {
+    const { prefix } = req.query;
+    const { maxCount } = req.query;
+    
+    if (!prefix) {
+      return res.status(400).json({ error: 'Se requiere el parámetro prefix' });
+    }
+
+    const bucketId = process.env.B2_BUCKET_ID;
+    const maxFileCount = maxCount ? parseInt(maxCount) : 100;
+    
+    const files = await b2.searchFilesByPrefix(bucketId, prefix, maxFileCount);
+    
+    // Mapear los resultados para incluir la URL de descarga directa
+    const filesWithUrls = files.map(file => ({
+      ...file,
+      downloadUrl: `${b2.getDownloadUrl()}/file/${process.env.B2_BUCKET_NAME}/${encodeURIComponent(file.fileName)}`
+    }));
+
+    res.status(200).json({
+      prefix,
+      count: filesWithUrls.length,
+      files: filesWithUrls
+    });
+  } catch (error) {
+    console.error(`[B2 Search] Error buscando archivos con prefijo:`, error);
+    next(error);
+  }
+});
+
+// --- Ruta para buscar archivos por nombre ---
+// GET /b2/search/name?name=video
+router.get('/search/name', async (req, res, next) => {
+  try {
+    const { name } = req.query;
+    
+    if (!name) {
+      return res.status(400).json({ error: 'Se requiere el parámetro name' });
+    }
+
+    const bucketId = process.env.B2_BUCKET_ID;
+    const files = await b2.searchFilesByName(bucketId, name);
+    
+    // Mapear los resultados para incluir la URL de descarga directa
+    const filesWithUrls = files.map(file => ({
+      ...file,
+      downloadUrl: `${b2.getDownloadUrl()}/file/${process.env.B2_BUCKET_NAME}/${encodeURIComponent(file.fileName)}`
+    }));
+
+    res.status(200).json({
+      searchTerm: name,
+      count: filesWithUrls.length,
+      files: filesWithUrls
+    });
+  } catch (error) {
+    console.error(`[B2 Search] Error buscando archivos por nombre:`, error);
+    next(error);
+  }
+});
+
+// --- Ruta para listar carpetas virtuales ---
+// GET /b2/folder?path=videos/
+router.get('/folder', async (req, res, next) => {
+  try {
+    const { path } = req.query;
+    const folderPath = path || ''; // Si no se proporciona, listar la raíz
+    
+    const bucketId = process.env.B2_BUCKET_ID;
+    const result = await b2.listFolder(bucketId, folderPath);
+    
+    // Mapear los archivos para incluir URLs de descarga
+    const filesWithUrls = result.files.map(file => ({
+      ...file,
+      downloadUrl: `${b2.getDownloadUrl()}/file/${process.env.B2_BUCKET_NAME}/${encodeURIComponent(file.fileName)}`
+    }));
+
+    res.status(200).json({
+      path: folderPath,
+      folders: result.folders,
+      files: filesWithUrls
+    });
+  } catch (error) {
+    console.error(`[B2 Folder] Error listando carpeta:`, error);
+    next(error);
+  }
+});
+
 module.exports = router;
