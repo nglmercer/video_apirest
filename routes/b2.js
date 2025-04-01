@@ -115,8 +115,8 @@ router.post('/upload', uploadDirectB2.single('video'), async (req, res, next) =>
 router.get('/videos', async (req, res, next) => {
     try {
         const bucketId = process.env.B2_BUCKET_ID;
-        const listResult = await b2.listFiles(bucketId);
-
+        // Filtrar solo archivos master.m3u8
+        const listResult = await b2.listVideoFiles(bucketId, null, 500, 'master.m3u8');
         if (listResult && listResult.files) {
             // Mapear los resultados para incluir la URL de descarga directa
             const filesWithUrls = listResult.files.map(file => ({
@@ -126,13 +126,14 @@ router.get('/videos', async (req, res, next) => {
 
             res.status(200).json({
                 files: filesWithUrls,
-                nextFileName: listResult.nextFileName // Para paginación futura
+                nextFileName: listResult.nextFileName, // Para paginación futura
+                totalVideoFiles: filesWithUrls.length
             });
         } else {
-            res.status(500).send('Failed to list files from B2.');
+            res.status(500).send('Failed to list master.m3u8 files from B2.');
         }
     } catch (error) {
-        console.error('[B2 List] Error listing B2 files:', error);
+        console.error('[B2 List] Error listing master.m3u8 files:', error);
         next(error);
     }
 });

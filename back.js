@@ -347,6 +347,79 @@ class BackblazeB2 {
     }
   }
 
+  /**
+   * Método para listar archivos de video en un bucket
+   * @param {string} bucketId - ID del bucket
+   * @param {string|null} startFileName - Nombre del archivo desde donde comenzar (para paginación)
+   * @param {number} maxFileCount - Número máximo de archivos a listar
+   * @returns {Promise<Object|null>} - Objeto con archivos de video listados o null si hubo error
+   */
+  /**
+   * Método para listar archivos de video en un bucket con opción de filtrar por tipo
+   * @param {string} bucketId - ID del bucket
+   * @param {string|null} startFileName - Nombre del archivo desde donde comenzar (para paginación)
+   * @param {number} maxFileCount - Número máximo de archivos a listar
+   * @param {string|null} fileType - Tipo específico de archivo a filtrar (null para todos)
+   * @returns {Promise<Object|null>} - Objeto con archivos de video listados o null si hubo error
+   */
+  async listVideoFiles(bucketId, startFileName = null, maxFileCount = 100, fileType = null) {
+    try {
+      // Obtener todos los archivos
+      const listResult = await this.listFiles(bucketId, startFileName, maxFileCount);
+      if (!listResult || !listResult.files) return null;
+      
+      // Definir extensiones de archivos de video permitidas
+      const videoExtensions = ['master.m3u8', '.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv'];
+      
+      // Filtrar solo archivos con extensiones de video y excluir segmentos .ts
+      const videoFiles = listResult.files.filter(file => {
+        const fileName = file.fileName.toLowerCase();
+        
+        // Si se especifica un tipo de archivo, filtrar solo por ese tipo
+        if (fileType) {
+          return fileName.endsWith(fileType.toLowerCase());
+        }
+        
+        // Si no se especifica tipo, usar el filtro general
+        return videoExtensions.some(ext => fileName.endsWith(ext)) || 
+               (fileName.endsWith('.ts') && !fileName.includes('/segment'));
+      });
+      
+      console.log(`Archivos de video listados para bucket ${bucketId}:`, videoFiles.length);
+      
+      // Devolver el mismo formato que listFiles pero con los archivos filtrados
+      return {
+        files: videoFiles,
+        nextFileName: listResult.nextFileName
+      };
+    } catch (error) {
+      console.error('Error al listar archivos de video:', error.response ? error.response.data : error.message);
+      return null;
+    }
+  }
+  
+  /**
+   * Método para listar solo archivos master.m3u8 en un bucket
+   * @param {string} bucketId - ID del bucket
+   * @param {string|null} startFileName - Nombre del archivo desde donde comenzar (para paginación)
+   * @param {number} maxFileCount - Número máximo de archivos a listar
+   * @returns {Promise<Object|null>} - Objeto con archivos master.m3u8 listados o null si hubo error
+   */
+  async listM3u8Files(bucketId, startFileName = null, maxFileCount = 100) {
+    return this.listVideoFiles(bucketId, startFileName, maxFileCount, 'master.m3u8');
+  }
+  
+  /**
+   * Método para listar solo archivos MP4 en un bucket
+   * @param {string} bucketId - ID del bucket
+   * @param {string|null} startFileName - Nombre del archivo desde donde comenzar (para paginación)
+   * @param {number} maxFileCount - Número máximo de archivos a listar
+   * @returns {Promise<Object|null>} - Objeto con archivos MP4 listados o null si hubo error
+   */
+  async listMp4Files(bucketId, startFileName = null, maxFileCount = 100) {
+    return this.listVideoFiles(bucketId, startFileName, maxFileCount, '.mp4');
+  }
+
   // Getters para acceder a la configuración
   getDownloadUrl() {
     return this.config.downloadUrl;
@@ -381,6 +454,9 @@ module.exports = {
   searchFilesByPrefix: (bucketId, prefix, maxFileCount) => defaultInstance.searchFilesByPrefix(bucketId, prefix, maxFileCount),
   searchFilesByName: (bucketId, fileName) => defaultInstance.searchFilesByName(bucketId, fileName),
   listFolder: (bucketId, folderPath) => defaultInstance.listFolder(bucketId, folderPath),
+  listVideoFiles: (bucketId, startFileName, maxFileCount, fileType) => defaultInstance.listVideoFiles(bucketId, startFileName, maxFileCount, fileType),
+  listM3u8Files: (bucketId, startFileName, maxFileCount) => defaultInstance.listM3u8Files(bucketId, startFileName, maxFileCount),
+  listMp4Files: (bucketId, startFileName, maxFileCount) => defaultInstance.listMp4Files(bucketId, startFileName, maxFileCount),
   
   // Exportar la clase para crear nuevas instancias
   BackblazeB2
