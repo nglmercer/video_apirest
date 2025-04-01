@@ -14,7 +14,6 @@ const { ensureDirExists, VIDEOS_DIR } = require('./utils/hls'); // VIDEOS_DIR pa
 const uploadRoutes = require('./routes/upload'); // Ruta para subida local y conversión HLS
 const videoRoutes = require('./routes/videos'); // Ruta para listar videos HLS locales
 const b2Routes = require('./routes/b2.js'); // Nuevas rutas para Backblaze B2
-const metadataRoutes = require('./routes/metadata.js'); // Nuevas rutas para metadatos de videos
 
 // Set ffmpeg path (needs to be done once)
 ffmpeg.setFfmpegPath(ffmpegPath);
@@ -38,7 +37,6 @@ app.use('/processed', express.static(PROCESSED_DIR_ROOT)); // Servir videos HLS 
 app.use('/upload', uploadRoutes);   // Ruta para subida local y conversión HLS
 app.use('/videos', videoRoutes);   // Ruta para listar videos HLS locales
 app.use('/b2', b2Routes);          // Rutas para interactuar con Backblaze B2 (/b2/upload, /b2/videos)
-app.use('/metadata', metadataRoutes); // Rutas para gestionar metadatos de videos
 
 app.get('/stream-resource/:videoId/:resourcePath(*)', async (req, res) => {
     const { videoId, resourcePath } = req.params;
@@ -98,23 +96,9 @@ const startServer = async () => {
         await ensureDirExists(VIDEOS_DIR); // Directorio para videos originales subidos localmente
         await ensureDirExists(PROCESSED_DIR_ROOT); // Directorio para videos HLS procesados
         const tempDir = path.join(__dirname, 'temp_uploads'); // Directorio temporal para subidas a B2
-        const dataDir = path.join(__dirname, 'data'); // Directorio para datos y metadatos
-
-        if (!fs.existsSync(tempDir)){
+         if (!fs.existsSync(tempDir)){
             fs.mkdirSync(tempDir, { recursive: true });
             console.log(`Created temporary upload directory: ${tempDir}`);
-        }
-
-        if (!fs.existsSync(dataDir)){
-            fs.mkdirSync(dataDir, { recursive: true });
-            console.log(`Created data directory: ${dataDir}`);
-        }
-
-        // Inicializar el archivo de metadatos si no existe
-        const metadataFile = path.join(dataDir, 'videos.json');
-        if (!fs.existsSync(metadataFile)) {
-            fs.writeFileSync(metadataFile, JSON.stringify({ videos: [] }, null, 2));
-            console.log(`Created metadata file: ${metadataFile}`);
         }
 
 

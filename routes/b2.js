@@ -73,36 +73,10 @@ router.post('/upload', uploadDirectB2.single('video'), async (req, res, next) =>
         // Escribir el buffer al archivo temporal para que b2.uploadFile lo lea
         fs.writeFileSync(tempFilePath, req.file.buffer);
         console.log(`[B2 Direct Upload] Archivo temporal creado en: ${tempFilePath}`);
-        
-        // Extraer metadatos del video
-        const metadataUtils = require('../utils/metadata');
-        const videoId = `direct-${Date.now()}`;
-        let videoMetadata = null;
-        
-        try {
-            videoMetadata = await metadataUtils.extractVideoMetadata(tempFilePath);
-            console.log(`[B2 Direct Upload] Metadatos extraídos:`, JSON.stringify(videoMetadata, null, 2));
-            
-            // Obtener el índice para la carpeta
-            const allVideos = await metadataUtils.getAllVideos();
-            const folderIndex = allVideos.length;
-            
-            // Guardar metadatos
-            await metadataUtils.addVideoMetadata(videoId, req.file.originalname, videoMetadata, {
-                folderIndex,
-                uploadType: 'direct'
-            });
-            
-            console.log(`[B2 Direct Upload] Metadatos guardados con índice: ${folderIndex}`);
-        } catch (metadataError) {
-            console.error(`[B2 Direct Upload] Error extrayendo metadatos:`, metadataError);
-            // Continuar con la subida aunque falle la extracción de metadatos
-        }
 
         // Subir a B2 usando la función refactorizada
         const bucketId = process.env.B2_BUCKET_ID;
-        const folderIndex = videoMetadata?.b2Info?.folderIndex || 0;
-        const fileName = videoMetadata ? `${folderIndex}_${req.file.originalname}` : req.file.originalname;
+        const fileName = req.file.originalname; // Usar el nombre original
 
         const uploadResult = await b2.uploadFile(bucketId, fileName, tempFilePath);
 
@@ -115,9 +89,6 @@ router.post('/upload', uploadDirectB2.single('video'), async (req, res, next) =>
             const downloadUrl = `${b2.getDownloadUrl()}/file/${process.env.B2_BUCKET_NAME}/${encodeURIComponent(fileName)}`;
             res.status(200).json({
                 message: 'File uploaded successfully to B2!',
-                videoId: videoId,
-                folderIndex: folderIndex,
-                metadata: videoMetadata,
                 fileInfo: uploadResult,
                 downloadUrl: downloadUrl
             });
@@ -185,29 +156,15 @@ router.post('/upload-hls', (req, res, next) => {
 
         const originalTempPath = req.file.path; // Ruta al video original temporal
         const videoId = path.basename(originalTempPath, path.extname(originalTempPath));
-        
+        const hlsLocalOutputDir = path.join(PROCESSED_DIR_ROOT, videoId); // Directorio donde convertToHls guardará los archivos
+
         console.log(`[B2 HLS Upload] Video temporal recibido: ${originalTempPath}`);
         console.log(`[B2 HLS Upload] Iniciando conversión HLS para videoId: ${videoId}`);
 
         try {
-            // 1. Convertir a HLS localmente y extraer metadatos
-            // Pasar el nombre original del archivo para guardarlo en los metadatos
-            await convertToHls(originalTempPath, videoId, req.file.originalname, b2.getAuthToken());
-            
-            // Obtener los metadatos del video para saber el índice de carpeta asignado
-            const metadataUtils = require('../utils/metadata');
-            const videoMetadata = await metadataUtils.getVideoById(videoId);
-            
-            if (!videoMetadata) {
-                throw new Error('No se pudieron obtener los metadatos del video después de la conversión');
-            }
-            
-            // Usar el índice para determinar la carpeta donde se guardaron los archivos HLS
-            const folderIndex = videoMetadata.b2Info?.folderIndex || 0;
-            const hlsLocalOutputDir = path.join(PROCESSED_DIR_ROOT, `${folderIndex}_${videoId}`);
-            
+            // 1. Convertir a HLS localmente
+            await convertToHls(originalTempPath, videoId, b2.getAuthToken());
             console.log(`[B2 HLS Upload] Conversión HLS completada para videoId: ${videoId}. Archivos en: ${hlsLocalOutputDir}`);
-            console.log(`[B2 HLS Upload] Metadatos del video:`, JSON.stringify(videoMetadata, null, 2));
 
             // 2. Listar TODOS los archivos HLS generados recursivamente
             const allLocalFiles = await listFilesInDirRecursive(hlsLocalOutputDir);
@@ -215,14 +172,11 @@ router.post('/upload-hls', (req, res, next) => {
 
             // 3. Subir cada archivo HLS a B2 manteniendo la estructura de carpetas
             const bucketId = process.env.B2_BUCKET_ID;
-            // Usar el índice de carpeta como prefijo para organizar los videos en B2
-            const b2Prefix = `${folderIndex}_${videoId}`;
-            
             const uploadPromises = allLocalFiles.map(async (localFilePath) => {
                 // Calcular ruta relativa al directorio base HLS
                 const relativePath = path.relative(hlsLocalOutputDir, localFilePath);
                 // Construir nombre de objeto B2 (prefijo + ruta relativa con /)
-                const b2FileName = `${b2Prefix}/${relativePath.replace(/\\/g, '/')}`; // Asegurar separadores /
+                const b2FileName = `${videoId}/${relativePath.replace(/\\/g, '/')}`; // Asegurar separadores /
 
                 try {
                     const result = await b2.uploadFile(bucketId, b2FileName, localFilePath);
@@ -255,16 +209,14 @@ router.post('/upload-hls', (req, res, next) => {
             }
 
             // 5. Responder al cliente
-            const mainManifestB2Path = `${b2Prefix}/master.m3u8`;
+            const mainManifestB2Path = `${videoId}/master.m3u8`;
             const mainManifestUrl = `${b2.getDownloadUrl()}/file/${process.env.B2_BUCKET_NAME}/${encodeURIComponent(mainManifestB2Path)}`;
 
             if (failedUploads.length > 0) {
                  res.status(207).json({ // Multi-Status
                     message: `HLS conversion complete. ${successfulUploads.length} files uploaded to B2, ${failedUploads.length} failed.`,
                     videoId: videoId,
-                    b2Prefix: b2Prefix + '/',
-                    folderIndex: videoMetadata.b2Info?.folderIndex || 0,
-                    metadata: videoMetadata,
+                    b2Prefix: videoId + '/',
                     successfulUploads: successfulUploads.map(r => r.file),
                     failedUploads: failedUploads.map(r => r.file),
                     mainManifestUrl: mainManifestUrl
@@ -273,9 +225,7 @@ router.post('/upload-hls', (req, res, next) => {
                  res.status(200).json({
                     message: 'HLS conversion and upload to B2 completed successfully.',
                     videoId: videoId,
-                    b2Prefix: b2Prefix + '/',
-                    folderIndex: videoMetadata.b2Info?.folderIndex || 0,
-                    metadata: videoMetadata,
+                    b2Prefix: videoId + '/',
                     uploadedFiles: successfulUploads.map(r => r.file),
                     mainManifestUrl: mainManifestUrl
                 });

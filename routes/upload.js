@@ -53,21 +53,10 @@ router.post('/', (req, res) => {
             originalFilename: req.file.originalname,
         });
 
-        // Start HLS conversion asynchronously with metadata extraction
-        convertToHls(videoPath, videoId, req.file.originalname)
+        // Start HLS conversion asynchronously
+        convertToHls(videoPath, videoId)
             .then(result => {
                 console.log(`[${videoId}] HLS processing completed successfully.`);
-                // Obtener los metadatos para mostrar información
-                const metadataUtils = require('../utils/metadata');
-                metadataUtils.getVideoById(videoId)
-                    .then(metadata => {
-                        if (metadata) {
-                            console.log(`[${videoId}] Metadatos guardados:`, JSON.stringify(metadata, null, 2));
-                        }
-                    })
-                    .catch(metaErr => {
-                        console.error(`[${videoId}] Error obteniendo metadatos después de procesamiento:`, metaErr);
-                    });
                 // Optionally delete original:
                 // require('fs').promises.unlink(videoPath).catch(e => console.error(`Error deleting original file ${videoPath}:`, e));
             })

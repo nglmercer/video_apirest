@@ -2,7 +2,6 @@ const path = require('path');
 const fs = require('fs').promises;
 const ffmpeg = require('fluent-ffmpeg');
 const ffprobePath = require('@ffprobe-installer/ffprobe').path;
-const metadataUtils = require('./metadata'); // Importar utilidades de metadatos
 
 // Explicitly set the ffprobe path for fluent-ffmpeg
 ffmpeg.setFfprobePath(ffprobePath);
@@ -35,46 +34,30 @@ const ensureDirExists = async (dirPath) => {
 };
 
 // --- HLS Conversion Function ---
-const convertToHls = (inputPath, videoId, originalFilename = null, authToken = null) => {
+const convertToHls = (inputPath, videoId) => {
     return new Promise(async (resolve, reject) => {
-        let outputDir = path.join(PROCESSED_DIR_UTILS, videoId); // Inicialmente definimos la ruta básica
+        const outputDir = path.join(PROCESSED_DIR_UTILS, videoId);
         await ensureDirExists(outputDir);
 
         // --- Get Original Video Info ---
         let originalWidth, originalHeight, originalBitrate;
-        let videoMetadata = null;
         try {
-            // Extraer metadatos completos del video
-            videoMetadata = await metadataUtils.extractVideoMetadata(inputPath);
-            console.log(`[${videoId}] Metadatos extraídos:`, JSON.stringify(videoMetadata, null, 2));
-            
-            originalWidth = videoMetadata.width;
-            originalHeight = videoMetadata.height;
-            originalBitrate = videoMetadata.bitrate || '5000k';
+            const metadata = await new Promise((resolveMeta, rejectMeta) => {
+                ffmpeg.ffprobe(inputPath, (err, data) => {
+                    if (err) return rejectMeta(err);
+                    resolveMeta(data);
+                });
+            });
+            const videoStream = metadata.streams.find(s => s.codec_type === 'video');
+            if (!videoStream) throw new Error('No video stream found in the input file.');
+            originalWidth = videoStream.width;
+            originalHeight = videoStream.height;
+            originalBitrate = videoStream.bit_rate || metadata.format.bit_rate || '5000k';
             console.log(`[${videoId}] Original resolution: ${originalWidth}x${originalHeight}, Bitrate: ${originalBitrate}`);
 
             if (!originalWidth || !originalHeight) {
                 throw new Error('Could not determine original video dimensions.');
             }
-            
-            // Asegurar que tenemos un ID de carpeta único basado en el índice
-            const allVideos = await metadataUtils.getAllVideos();
-            const folderIndex = allVideos.length;
-            console.log(`[${videoId}] Asignando índice de carpeta: ${folderIndex}`);
-            
-            // Guardar los metadatos en el archivo JSON con el índice de carpeta
-            const filename = originalFilename || path.basename(inputPath);
-            await metadataUtils.addVideoMetadata(videoId, filename, videoMetadata, {
-                folderIndex,
-                authToken
-            });
-            
-            // Crear un directorio específico para este video basado en su índice
-            const indexedOutputDir = path.join(PROCESSED_DIR_UTILS, `${folderIndex}_${videoId}`);
-            // Actualizar la ruta de salida para usar el directorio indexado
-            const outputDir = indexedOutputDir;
-            await ensureDirExists(outputDir);
-            console.log(`[${videoId}] Directorio indexado creado: ${outputDir}`);
         } catch (err) {
             console.error(`[${videoId}] Error probing video metadata:`, err);
             return reject(new Error(`Failed to get video metadata: ${err.message}`));
