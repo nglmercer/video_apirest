@@ -14,6 +14,7 @@ const { ensureDirExists, VIDEOS_DIR } = require('./utils/hls'); // VIDEOS_DIR pa
 const uploadRoutes = require('./routes/upload'); // Ruta para subida local y conversión HLS
 const videoRoutes = require('./routes/videos'); // Ruta para listar videos HLS locales
 const b2Routes = require('./routes/b2.js'); // Nuevas rutas para Backblaze B2
+const b2get = require('./routes/b2get.js'); // Importar módulo de Backblaze B2 (para autorización inicial)
 
 // Set ffmpeg path (needs to be done once)
 ffmpeg.setFfmpegPath(ffmpegPath);
@@ -37,6 +38,7 @@ app.use('/processed', express.static(PROCESSED_DIR_ROOT)); // Servir videos HLS 
 app.use('/upload', uploadRoutes);   // Ruta para subida local y conversión HLS
 app.use('/videos', videoRoutes);   // Ruta para listar videos HLS locales
 app.use('/b2', b2Routes);          // Rutas para interactuar con Backblaze B2 (/b2/upload, /b2/videos)
+app.use('/b2', b2get);          // Rutas para interactuar con Backblaze B2 (/b2/upload, /b2/videos)
 
 app.get('/stream-resource/:videoId/:resourcePath(*)', async (req, res) => {
     const { videoId, resourcePath } = req.params;

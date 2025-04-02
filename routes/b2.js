@@ -12,21 +12,6 @@ const { ensureDirExists, convertToHls } = require('../utils/hls'); // Importar f
 const TEMP_UPLOAD_DIR = path.resolve(__dirname, '..', 'temp_uploads');
 const PROCESSED_DIR_ROOT = path.resolve(__dirname, '..', 'processed_videos');
 
-// --- Helper function to recursively list files ---
-async function listFilesInDirRecursive(dirPath) {
-    let fileList = [];
-    const entries = await fsPromises.readdir(dirPath, { withFileTypes: true });
-    for (const entry of entries) {
-        const fullPath = path.join(dirPath, entry.name); // Usar join en lugar de resolve aquí
-        if (entry.isDirectory()) {
-            fileList = fileList.concat(await listFilesInDirRecursive(fullPath));
-        } else if (entry.isFile()) {
-            fileList.push(fullPath);
-        }
-    }
-    return fileList;
-}
-
 // --- Configuración de Multer para subida directa a B2 (en memoria) ---
 const storageDirectB2 = multer.memoryStorage();
 const uploadDirectB2 = multer({ storage: storageDirectB2 });
@@ -76,13 +61,17 @@ router.post('/upload', uploadDirectB2.single('video'), async (req, res, next) =>
 
         // Subir a B2 usando la función refactorizada
         const bucketId = process.env.B2_BUCKET_ID;
-        const fileName = req.file.originalname; // Usar el nombre original
+        const fileName = req.file.originalname; // Usar el nombre original para la subida y el registro
 
+        // uploadFile ahora registra automáticamente el historial
         const uploadResult = await b2.uploadFile(bucketId, fileName, tempFilePath);
 
         // Eliminar el archivo temporal después de subirlo
         fs.unlinkSync(tempFilePath);
         console.log(`[B2 Direct Upload] Archivo temporal eliminado: ${tempFilePath}`);
+
+        // Obtener el historial de esta subida específica
+        const uploadHistory = b2.getUploadHistory(fileName);
 
         if (uploadResult) {
             // Construir la URL de descarga
@@ -90,10 +79,14 @@ router.post('/upload', uploadDirectB2.single('video'), async (req, res, next) =>
             res.status(200).json({
                 message: 'File uploaded successfully to B2!',
                 fileInfo: uploadResult,
-                downloadUrl: downloadUrl
+                downloadUrl: downloadUrl,
+                uploadHistory: uploadHistory // Incluir historial
             });
         } else {
-            res.status(500).send('Failed to upload file to B2.');
+             res.status(500).json({
+                message: 'Failed to upload file to B2.',
+                uploadHistory: uploadHistory // Incluir historial incluso en fallo
+            });
         }
     } catch (error) {
          // Asegurarse de eliminar el archivo temporal incluso si hay error
@@ -110,33 +103,7 @@ router.post('/upload', uploadDirectB2.single('video'), async (req, res, next) =>
     }
 });
 
-// --- Ruta para listar archivos/videos desde Backblaze B2 ---
-// GET /b2/videos
-router.get('/videos', async (req, res, next) => {
-    try {
-        const bucketId = process.env.B2_BUCKET_ID;
-        // Filtrar solo archivos master.m3u8
-        const listResult = await b2.listVideoFiles(bucketId, null, 500, 'master.m3u8');
-        if (listResult && listResult.files) {
-            // Mapear los resultados para incluir la URL de descarga directa
-            const filesWithUrls = listResult.files.map(file => ({
-                ...file,
-                downloadUrl: `${b2.getDownloadUrl()}/file/${process.env.B2_BUCKET_NAME}/${encodeURIComponent(file.fileName)}`
-            }));
 
-            res.status(200).json({
-                files: filesWithUrls,
-                nextFileName: listResult.nextFileName, // Para paginación futura
-                totalVideoFiles: filesWithUrls.length
-            });
-        } else {
-            res.status(500).send('Failed to list master.m3u8 files from B2.');
-        }
-    } catch (error) {
-        console.error('[B2 List] Error listing master.m3u8 files:', error);
-        next(error);
-    }
-});
 
 // --- Ruta para subir video, convertir a HLS y subir HLS a B2 ---
 // POST /b2/upload-hls
@@ -164,42 +131,17 @@ router.post('/upload-hls', (req, res, next) => {
 
         try {
             // 1. Convertir a HLS localmente
-            await convertToHls(originalTempPath, videoId, b2.getAuthToken());
+            // 1. Convertir a HLS localmente
+            // Asegúrate de que convertToHls no necesite el token si no lo usa internamente
+            await convertToHls(originalTempPath, videoId);
             console.log(`[B2 HLS Upload] Conversión HLS completada para videoId: ${videoId}. Archivos en: ${hlsLocalOutputDir}`);
 
-            // 2. Listar TODOS los archivos HLS generados recursivamente
-            const allLocalFiles = await listFilesInDirRecursive(hlsLocalOutputDir);
-            console.log(`[B2 HLS Upload] Archivos HLS locales encontrados (${allLocalFiles.length}):`, allLocalFiles);
-
-            // 3. Subir cada archivo HLS a B2 manteniendo la estructura de carpetas
+            // 2. Subir el directorio HLS completo a B2 usando la nueva función
             const bucketId = process.env.B2_BUCKET_ID;
-            const uploadPromises = allLocalFiles.map(async (localFilePath) => {
-                // Calcular ruta relativa al directorio base HLS
-                const relativePath = path.relative(hlsLocalOutputDir, localFilePath);
-                // Construir nombre de objeto B2 (prefijo + ruta relativa con /)
-                const b2FileName = `${videoId}/${relativePath.replace(/\\/g, '/')}`; // Asegurar separadores /
+            const b2Prefix = videoId; // Usar videoId como prefijo en B2
+            const uploadDirResult = await b2.uploadDirectoryToB2(bucketId, hlsLocalOutputDir, b2Prefix);
 
-                try {
-                    const result = await b2.uploadFile(bucketId, b2FileName, localFilePath);
-                    if (!result) {
-                        console.warn(`[B2 HLS Upload] Falló la subida a B2 para: ${b2FileName} (desde ${localFilePath})`);
-                        return { success: false, file: b2FileName };
-                    }
-                    console.log(`[B2 HLS Upload] Subido a B2: ${b2FileName} (desde ${localFilePath})`);
-                    return { success: true, file: b2FileName, info: result };
-                } catch (uploadError) {
-                    console.error(`[B2 HLS Upload] Error subiendo ${b2FileName} a B2:`, uploadError);
-                    return { success: false, file: b2FileName };
-                }
-            });
-
-            const uploadResults = await Promise.all(uploadPromises);
-            const successfulUploads = uploadResults.filter(r => r.success);
-            const failedUploads = uploadResults.filter(r => !r.success);
-
-            console.log(`[B2 HLS Upload] Subidas a B2 completadas. Éxitos: ${successfulUploads.length}, Fallos: ${failedUploads.length}`);
-
-            // 4. Limpieza local (independientemente del éxito de la subida a B2)
+            // 3. Limpieza local (independientemente del éxito de la subida a B2)
             try {
                 await fsPromises.unlink(originalTempPath);
                 console.log(`[B2 HLS Upload] Archivo original temporal eliminado: ${originalTempPath}`);
@@ -209,26 +151,25 @@ router.post('/upload-hls', (req, res, next) => {
                 console.error(`[B2 HLS Upload] Error durante la limpieza local:`, cleanupError);
             }
 
-            // 5. Responder al cliente
-            const mainManifestB2Path = `${videoId}/master.m3u8`;
+            // 4. Responder al cliente
+            const mainManifestB2Path = `${b2Prefix}/master.m3u8`; // Usar el prefijo
             const mainManifestUrl = `${b2.getDownloadUrl()}/file/${process.env.B2_BUCKET_NAME}/${encodeURIComponent(mainManifestB2Path)}`;
 
-            if (failedUploads.length > 0) {
+            if (!uploadDirResult.success) {
                  res.status(207).json({ // Multi-Status
-                    message: `HLS conversion complete. ${successfulUploads.length} files uploaded to B2, ${failedUploads.length} failed.`,
+                    message: `HLS conversion complete. ${uploadDirResult.successfulUploads.length} files uploaded to B2, ${uploadDirResult.failedUploads.length} failed.`,
                     videoId: videoId,
-                    b2Prefix: videoId + '/',
-                    successfulUploads: successfulUploads.map(r => r.file),
-                    failedUploads: failedUploads.map(r => r.file),
-                    mainManifestUrl: mainManifestUrl
+                    b2Prefix: b2Prefix + '/',
+                    mainManifestUrl: mainManifestUrl,
+                    uploadHistory: uploadDirResult.history // Incluir historial agrupado
                 });
             } else {
                  res.status(200).json({
                     message: 'HLS conversion and upload to B2 completed successfully.',
                     videoId: videoId,
-                    b2Prefix: videoId + '/',
-                    uploadedFiles: successfulUploads.map(r => r.file),
-                    mainManifestUrl: mainManifestUrl
+                    b2Prefix: b2Prefix + '/',
+                    mainManifestUrl: mainManifestUrl,
+                    uploadHistory: uploadDirResult.history // Incluir historial agrupado
                 });
             }
 
@@ -251,177 +192,6 @@ router.post('/upload-hls', (req, res, next) => {
         }
     });
 });
-router.get('/download-url/:fileName', async (req, res) => {
-    try {
-      const { fileName } = req.params;
-      const { bucket } = req.query; // Opcional: nombre del bucket como parámetro query
-      
-      if (!fileName) {
-        return res.status(400).json({ error: 'Se requiere el nombre del archivo' });
-      }
-  
-      const downloadUrl = await b2.getDownloadUrlWithToken(
-        fileName, 
-        bucket || "cloud-video-store" // Bucket por defecto
-      );
-  
-      res.json({
-        success: true,
-        downloadUrl,
-        fileName
-      });
-    } catch (error) {
-      console.error('Error al generar URL de descarga:', error);
-      res.status(500).json({ 
-        error: 'Error al generar URL de descarga',
-        details: error.message 
-      });
-    }
-  });
-  
-  // Ruta para redireccionar directamente al archivo
-router.get('/download/:fileName', async (req, res) => {
-try {
-    const { fileName } = req.params;
-    const { bucket } = req.query; // Opcional: nombre del bucket como parámetro query
-    
-    if (!fileName) {
-    return res.status(400).json({ error: 'Se requiere el nombre del archivo' });
-    }
 
-    const downloadUrl = await b2.getDownloadUrlWithToken(
-    fileName, 
-    bucket || "cloud-video-store" // Bucket por defecto
-    );
-
-    res.redirect(downloadUrl);
-} catch (error) {
-    console.error('Error al descargar archivo:', error);
-    res.status(500).json({ 
-    error: 'Error al descargar archivo',
-    details: error.message 
-    });
-}
-});
-router.get('/hls-url', async (req, res) => {
-    try {
-      const { filePath } = req.query;
-      
-      if (!filePath) {
-        return res.status(400).json({ 
-          error: 'Se requiere el parámetro filePath' 
-        });
-      }
-  
-      // Ejemplo de filePath: "1743289534031-538902181-R_E_P_O____2025_03_23_2_10_46_a___m_/master.m3u8"
-      const downloadUrl = await b2.getDownloadUrlWithToken(
-        filePath,
-        "cloud-video-store" // Tu bucket name
-      );
-  
-      res.json({
-        success: true,
-        url: downloadUrl,
-        filePath
-      });
-      
-    } catch (error) {
-      console.error('Error al generar URL HLS:', error);
-      res.status(500).json({ 
-        error: 'Error al generar URL',
-        details: error.message 
-      });
-    }
-  });
-
-// --- Ruta para buscar archivos por prefijo ---
-// GET /b2/search/prefix?prefix=folder/
-router.get('/search/prefix', async (req, res, next) => {
-  try {
-    const { prefix } = req.query;
-    const { maxCount } = req.query;
-    
-    if (!prefix) {
-      return res.status(400).json({ error: 'Se requiere el parámetro prefix' });
-    }
-
-    const bucketId = process.env.B2_BUCKET_ID;
-    const maxFileCount = maxCount ? parseInt(maxCount) : 100;
-    
-    const files = await b2.searchFilesByPrefix(bucketId, prefix, maxFileCount);
-    
-    // Mapear los resultados para incluir la URL de descarga directa
-    const filesWithUrls = files.map(file => ({
-      ...file,
-      downloadUrl: `${b2.getDownloadUrl()}/file/${process.env.B2_BUCKET_NAME}/${encodeURIComponent(file.fileName)}`
-    }));
-
-    res.status(200).json({
-      prefix,
-      count: filesWithUrls.length,
-      files: filesWithUrls
-    });
-  } catch (error) {
-    console.error(`[B2 Search] Error buscando archivos con prefijo:`, error);
-    next(error);
-  }
-});
-
-// --- Ruta para buscar archivos por nombre ---
-// GET /b2/search/name?name=video
-router.get('/search/name', async (req, res, next) => {
-  try {
-    const { name } = req.query;
-    
-    if (!name) {
-      return res.status(400).json({ error: 'Se requiere el parámetro name' });
-    }
-
-    const bucketId = process.env.B2_BUCKET_ID;
-    const files = await b2.searchFilesByName(bucketId, name);
-    
-    // Mapear los resultados para incluir la URL de descarga directa
-    const filesWithUrls = files.map(file => ({
-      ...file,
-      downloadUrl: `${b2.getDownloadUrl()}/file/${process.env.B2_BUCKET_NAME}/${encodeURIComponent(file.fileName)}`
-    }));
-
-    res.status(200).json({
-      searchTerm: name,
-      count: filesWithUrls.length,
-      files: filesWithUrls
-    });
-  } catch (error) {
-    console.error(`[B2 Search] Error buscando archivos por nombre:`, error);
-    next(error);
-  }
-});
-
-// --- Ruta para listar carpetas virtuales ---
-// GET /b2/folder?path=videos/
-router.get('/folder', async (req, res, next) => {
-  try {
-    const { path } = req.query;
-    const folderPath = path || ''; // Si no se proporciona, listar la raíz
-    
-    const bucketId = process.env.B2_BUCKET_ID;
-    const result = await b2.listFolder(bucketId, folderPath);
-    
-    // Mapear los archivos para incluir URLs de descarga
-    const filesWithUrls = result.files.map(file => ({
-      ...file,
-      downloadUrl: `${b2.getDownloadUrl()}/file/${process.env.B2_BUCKET_NAME}/${encodeURIComponent(file.fileName)}`
-    }));
-
-    res.status(200).json({
-      path: folderPath,
-      folders: result.folders,
-      files: filesWithUrls
-    });
-  } catch (error) {
-    console.error(`[B2 Folder] Error listando carpeta:`, error);
-    next(error);
-  }
-});
 
 module.exports = router;

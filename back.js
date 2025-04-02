@@ -1,7 +1,9 @@
 require('dotenv').config(); // Cargar variables de entorno
 const axios = require('axios');
 const fs = require('fs');
+const fsPromises = require('fs').promises; // Necesario para operaciones async de FS
 const path = require('path');
+const crypto = require('crypto'); // Necesario para SHA1
 
 /**
  * Clase para interactuar con la API de Backblaze B2
@@ -26,6 +28,7 @@ class BackblazeB2 {
       downloadUrl: '', // Se obtendrá durante la autenticación
       defaultBucket: options.defaultBucket || 'cloud-video-store'
     };
+    this.uploadHistory = new Map(); // Mapa para almacenar el historial de subidas
   }
 
   /**
@@ -119,7 +122,7 @@ class BackblazeB2 {
       // 2. Leer el archivo
       const fileContent = fs.readFileSync(filePath);
       const fileSize = fs.statSync(filePath).size;
-      const sha1 = require('crypto').createHash('sha1').update(fileContent).digest('hex');
+      const sha1 = crypto.createHash('sha1').update(fileContent).digest('hex');
 
       // 3. Subir el archivo
       const uploadResponse = await axios.post(uploadUrl, fileContent, {
@@ -132,12 +135,137 @@ class BackblazeB2 {
         }
       });
 
-      console.log('Archivo subido exitosamente:', uploadResponse.data);
-      return uploadResponse.data;
+      const resultData = uploadResponse.data;
+      console.log(`[B2 Upload] Archivo subido exitosamente: ${resultData.fileName} (ID: ${resultData.fileId})`);
+
+      // Registrar la subida individualmente
+      this._logUpload(fileName, { // Usamos fileName como clave para subidas individuales
+        success: true,
+        file: resultData.fileName,
+        fileId: resultData.fileId,
+        size: resultData.contentLength,
+        timestamp: new Date().toISOString()
+      });
+
+      return resultData;
     } catch (error) {
-      console.error('Error al subir archivo:', error.response ? error.response.data : error.message);
+      const errorMessage = error.response ? error.response.data : error.message;
+      console.error(`[B2 Upload] Error al subir archivo ${fileName}:`, errorMessage);
+       // Registrar el fallo individualmente
+      this._logUpload(fileName, {
+        success: false,
+        file: fileName,
+        error: errorMessage,
+        timestamp: new Date().toISOString()
+      });
       return null;
     }
+  }
+
+  /**
+   * Registra una entrada en el historial de subidas.
+   * @param {string} key - Clave para agrupar las subidas (e.g., videoId o nombre de archivo).
+   * @param {object} logEntry - Objeto con la información de la subida.
+   * @private
+   */
+  _logUpload(key, logEntry) {
+    if (!this.uploadHistory.has(key)) {
+      this.uploadHistory.set(key, []);
+    }
+    this.uploadHistory.get(key).push(logEntry);
+  }
+
+  /**
+   * Obtiene el historial de subidas para una clave específica.
+   * @param {string} key - La clave (e.g., videoId) del historial a obtener.
+   * @returns {Array|undefined} - Array de entradas de log o undefined si no existe.
+   */
+  getUploadHistory(key) {
+    return this.uploadHistory.get(key);
+  }
+
+  /**
+   * Helper function to recursively list files in a directory.
+   * @param {string} dirPath - Path to the directory.
+   * @returns {Promise<string[]>} - Array of full file paths.
+   * @private
+   */
+  async _listFilesInDirRecursive(dirPath) {
+    let fileList = [];
+    try {
+        const entries = await fsPromises.readdir(dirPath, { withFileTypes: true });
+        for (const entry of entries) {
+            const fullPath = path.join(dirPath, entry.name);
+            if (entry.isDirectory()) {
+                fileList = fileList.concat(await this._listFilesInDirRecursive(fullPath));
+            } else if (entry.isFile()) {
+                fileList.push(fullPath);
+            }
+        }
+    } catch (error) {
+        console.error(`[B2 Helper] Error listando archivos en ${dirPath}:`, error);
+    }
+    return fileList;
+  }
+
+
+  /**
+   * Sube todos los archivos de un directorio local a B2, manteniendo la estructura.
+   * @param {string} bucketId - ID del bucket de destino.
+   * @param {string} localDirPath - Ruta del directorio local a subir.
+   * @param {string} b2Prefix - Prefijo (carpeta virtual) en B2 donde se subirán los archivos.
+   * @returns {Promise<object>} - Objeto con el resumen de la operación { success: boolean, successfulUploads: [], failedUploads: [] }.
+   */
+  async uploadDirectoryToB2(bucketId, localDirPath, b2Prefix) {
+    console.log(`[B2 Dir Upload] Iniciando subida del directorio ${localDirPath} a B2 con prefijo ${b2Prefix}`);
+    const allLocalFiles = await this._listFilesInDirRecursive(localDirPath);
+    console.log(`[B2 Dir Upload] Archivos locales encontrados (${allLocalFiles.length}):`, allLocalFiles.map(f => path.relative(localDirPath, f)));
+
+    const uploadPromises = allLocalFiles.map(async (localFilePath) => {
+        const relativePath = path.relative(localDirPath, localFilePath);
+        // Asegurar separadores / para B2 y limpiar el prefijo si es necesario
+        const cleanPrefix = b2Prefix.endsWith('/') ? b2Prefix : `${b2Prefix}/`;
+        const b2FileName = `${cleanPrefix}${relativePath.replace(/\\/g, '/')}`;
+
+        try {
+            const result = await this.uploadFile(bucketId, b2FileName, localFilePath); // uploadFile ya registra en el historial
+            if (!result) {
+                 console.warn(`[B2 Dir Upload] Falló la subida a B2 para: ${b2FileName} (desde ${localFilePath})`);
+                 // Registro de fallo ya hecho dentro de uploadFile
+                 return { success: false, file: b2FileName, local: localFilePath };
+            }
+            // Registro de éxito ya hecho dentro de uploadFile
+            // Agrupamos el log bajo el prefijo b2Prefix
+            const logEntry = this.uploadHistory.get(b2FileName)?.pop(); // Obtenemos el último log para este archivo
+            if (logEntry) {
+                this._logUpload(b2Prefix, logEntry); // Lo añadimos al grupo del directorio
+                this.uploadHistory.delete(b2FileName); // Eliminamos la entrada individual
+            }
+            return { success: true, file: b2FileName, info: result, local: localFilePath };
+        } catch (uploadError) {
+            console.error(`[B2 Dir Upload] Error subiendo ${b2FileName} a B2:`, uploadError);
+             // Registro de fallo ya hecho dentro de uploadFile
+            const logEntry = this.uploadHistory.get(b2FileName)?.pop();
+             if (logEntry) {
+                this._logUpload(b2Prefix, logEntry);
+                this.uploadHistory.delete(b2FileName);
+            }
+            return { success: false, file: b2FileName, local: localFilePath };
+        }
+    });
+
+    const uploadResults = await Promise.all(uploadPromises);
+    const successfulUploads = uploadResults.filter(r => r.success);
+    const failedUploads = uploadResults.filter(r => !r.success);
+
+    console.log(`[B2 Dir Upload] Subidas a B2 completadas para prefijo ${b2Prefix}. Éxitos: ${successfulUploads.length}, Fallos: ${failedUploads.length}`);
+
+    return {
+        success: failedUploads.length === 0,
+        successfulUploads: successfulUploads.map(r => ({ file: r.file, info: r.info })),
+        failedUploads: failedUploads.map(r => ({ file: r.file, local: r.local })),
+        history: this.getUploadHistory(b2Prefix) // Devolvemos el historial agrupado
+    };
   }
 
   /**
@@ -457,7 +585,11 @@ module.exports = {
   listVideoFiles: (bucketId, startFileName, maxFileCount, fileType) => defaultInstance.listVideoFiles(bucketId, startFileName, maxFileCount, fileType),
   listM3u8Files: (bucketId, startFileName, maxFileCount) => defaultInstance.listM3u8Files(bucketId, startFileName, maxFileCount),
   listMp4Files: (bucketId, startFileName, maxFileCount) => defaultInstance.listMp4Files(bucketId, startFileName, maxFileCount),
-  
+
+  // Nuevas funciones de subida y registro
+  uploadDirectoryToB2: (bucketId, localDirPath, b2Prefix) => defaultInstance.uploadDirectoryToB2(bucketId, localDirPath, b2Prefix),
+  getUploadHistory: (key) => defaultInstance.getUploadHistory(key),
+
   // Exportar la clase para crear nuevas instancias
   BackblazeB2
 };
