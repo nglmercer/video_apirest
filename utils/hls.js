@@ -11,6 +11,29 @@ const PROJECT_ROOT = path.join(__dirname, '..');
 const PROCESSED_DIR_UTILS = path.join(PROJECT_ROOT, 'processed_videos');
 const VIDEOS_DIR_UTILS = path.join(PROJECT_ROOT, 'videos');
 
+// --- Default HLS Conversion Options ---
+const defaultHlsOptions = {
+    resolutions: [
+        { name: '480p', size: '854x480', bitrate: '800k' },
+        { name: '720p', size: '1280x720', bitrate: '1500k' }
+        // Add more resolutions like 1080p if needed
+        // { name: '1080p', size: '1920x1080', bitrate: '2800k' }
+    ],
+    hlsTime: 10, // Segment duration in seconds
+    hlsPlaylistType: 'vod', // 'vod' or 'event'
+    copyCodecsThresholdHeight: 720, // Max height to consider copying original codecs (adjust as needed)
+    audioCodec: 'aac',
+    audioBitrate: '128k',
+    videoCodec: 'h264',
+    videoProfile: 'main',
+    crf: 20, // Constant Rate Factor (lower means better quality, larger file)
+    gopSize: 48, // Group of Pictures size (keyframe interval)
+    proxyBaseUrlTemplate: 'http://localhost:3000/stream-resource/{videoId}/', // Template for master playlist URLs
+    masterPlaylistName: 'master.m3u8',
+    segmentNameTemplate: 'segment%03d.ts',
+    resolutionPlaylistName: 'playlist.m3u8'
+};
+
 
 // --- Ensure Directories Exist ---
 const ensureDirExists = async (dirPath) => {
@@ -33,147 +56,230 @@ const ensureDirExists = async (dirPath) => {
     }
 };
 
-// --- HLS Conversion Function ---
-const convertToHls = (inputPath, videoId) => {
-    return new Promise(async (resolve, reject) => {
-        const outputDir = path.join(PROCESSED_DIR_UTILS, videoId);
-        await ensureDirExists(outputDir);
 
+// --- Helper Function to Process a Single Resolution ---
+const processResolution = (inputPath, outputDir, resolutionInfo, commonOptions, videoId) => {
+    return new Promise(async (resolve, reject) => {
+        const { name, size, bitrate, isOriginal } = resolutionInfo;
+        const {
+            hlsTime, hlsPlaylistType, copyCodecsThresholdHeight,
+            audioCodec, audioBitrate, videoCodec, videoProfile, crf, gopSize,
+            segmentNameTemplate, resolutionPlaylistName
+        } = commonOptions;
+
+        const resOutputDir = path.join(outputDir, name);
+        const playlistPath = path.join(resOutputDir, resolutionPlaylistName);
+        const segmentPath = path.join(resOutputDir, segmentNameTemplate);
+        const bandwidth = parseInt(String(bitrate).replace('k', '')) * 1000 || 500000; // Default if bitrate is invalid
+
+        await ensureDirExists(resOutputDir);
+
+        let command = ffmpeg(inputPath);
+        const outputOptions = [];
+
+        // Determine if we should copy codecs or re-encode
+        const shouldCopyCodecs = isOriginal && parseInt(name) <= copyCodecsThresholdHeight;
+
+        if (shouldCopyCodecs) {
+            console.log(`[${videoId}] Segmenting resolution ${name} by copying streams.`);
+            outputOptions.push(
+                '-c:v copy',
+                '-c:a copy'
+            );
+        } else {
+            console.log(`[${videoId}] Re-encoding to ${name}.`);
+            outputOptions.push(
+                `-vf scale=${size}`,
+                `-c:a ${audioCodec}`, `-ar 48000`, `-b:a ${audioBitrate}`, // Audio options
+                `-c:v ${videoCodec}`, `-profile:v ${videoProfile}`, `-crf ${crf}`, `-sc_threshold 0`, // Video options
+                `-g ${gopSize}`, `-keyint_min ${gopSize}`, // Keyframe options
+                `-b:v ${bitrate}`, // Target video bitrate
+                `-maxrate ${Math.floor(bandwidth * 1.2 / 1000)}k`, // Max bitrate
+                `-bufsize ${Math.floor(bandwidth * 1.5 / 1000)}k` // Buffer size
+            );
+        }
+
+        // Common HLS options
+        outputOptions.push(
+            `-hls_time ${hlsTime}`,
+            `-hls_playlist_type ${hlsPlaylistType}`,
+            `-hls_segment_filename ${segmentPath}`
+        );
+
+        command
+            .outputOptions(outputOptions)
+            .output(playlistPath)
+            .on('start', (commandLine) => console.log(`[${videoId}] Started processing ${name}: ${commandLine.substring(0, 200)}...`)) // Log shorter command
+            .on('progress', (progress) => {
+                // Only log progress occasionally to avoid spamming logs
+                if (progress.percent && Math.round(progress.percent) % 10 === 0) {
+                     console.log(`[${videoId}] Processing ${name}: ${progress.percent.toFixed(2)}% done`);
+                }
+            })
+            .on('end', () => {
+                console.log(`[${videoId}] Finished processing ${name}`);
+                resolve({ name, size, bitrate, bandwidth, playlistRelativePath: `${name}/${resolutionPlaylistName}` });
+            })
+            .on('error', (err) => {
+                console.error(`[${videoId}] Error processing ${name}:`, err.message);
+                reject(new Error(`Error processing ${name}: ${err.message}`)); // Pass a more informative error
+            })
+            .run();
+    });
+};
+
+
+// --- Main HLS Conversion Function ---
+const convertToHls = (inputPath, videoId, userOptions = {}) => {
+    return new Promise(async (resolve, reject) => {
+        // Merge user options with defaults (shallow merge is usually sufficient)
+        const options = { ...defaultHlsOptions, ...userOptions };
+        const outputDir = path.join(PROCESSED_DIR_UTILS, videoId);
+
+        try {
+            await ensureDirExists(outputDir);
+        } catch (err) {
+            return reject(new Error(`Failed to ensure output directory exists: ${err.message}`));
+        }
         // --- Get Original Video Info ---
-        let originalWidth, originalHeight, originalBitrate;
+        let originalWidth, originalHeight, originalBitrateStr;
         try {
             const metadata = await new Promise((resolveMeta, rejectMeta) => {
                 ffmpeg.ffprobe(inputPath, (err, data) => {
-                    if (err) return rejectMeta(err);
+                    if (err) return rejectMeta(new Error(`ffprobe error: ${err.message}`)); // Wrap error
+                    if (!data) return rejectMeta(new Error('ffprobe returned no data.'));
                     resolveMeta(data);
                 });
             });
-            const videoStream = metadata.streams.find(s => s.codec_type === 'video');
-            if (!videoStream) throw new Error('No video stream found in the input file.');
+
+            const videoStream = metadata.streams?.find(s => s.codec_type === 'video');
+            if (!videoStream) throw new Error('No video stream found');
             originalWidth = videoStream.width;
             originalHeight = videoStream.height;
-            originalBitrate = videoStream.bit_rate || metadata.format.bit_rate || '5000k';
-            console.log(`[${videoId}] Original resolution: ${originalWidth}x${originalHeight}, Bitrate: ${originalBitrate}`);
+            // Estimate bitrate if not available, ensure it's a string like '5000k'
+            originalBitrateStr = videoStream.bit_rate
+                ? `${Math.round(videoStream.bit_rate / 1000)}k`
+                : metadata.format?.bit_rate
+                    ? `${Math.round(metadata.format.bit_rate / 1000)}k`
+                    : '5000k'; // Fallback bitrate
+
+            console.log(`[${videoId}] Original resolution: ${originalWidth}x${originalHeight}, Bitrate: ${originalBitrateStr}`);
 
             if (!originalWidth || !originalHeight) {
                 throw new Error('Could not determine original video dimensions.');
             }
         } catch (err) {
-            console.error(`[${videoId}] Error probing video metadata:`, err);
+            console.error(`[${videoId}] Error probing video metadata:`, err.message);
             return reject(new Error(`Failed to get video metadata: ${err.message}`));
         }
 
-        // --- Define Resolutions ---
-        const targetResolutions = [
-            { name: '480p', size: '854x480', bitrate: '800k' },
-            { name: '720p', size: '1280x720', bitrate: '1500k' }
-        ];
-
+        // --- Prepare Target Resolutions ---
+        let targetResolutions = [...options.resolutions]; // Clone default resolutions
         const originalResName = `${originalHeight}p`;
-        if (originalHeight !== 480 && originalHeight !== 720 && originalWidth && originalHeight) {
-            targetResolutions.push({
-                name: originalResName,
-                size: `${originalWidth}x${originalHeight}`,
-                bitrate: originalBitrate,
-                isOriginal: true
-            });
-            targetResolutions.sort((a, b) => parseInt(a.name) - parseInt(b.name));
+        const originalAlreadyDefined = targetResolutions.some(r => r.name === originalResName);
+
+        // Add original resolution if it's not already defined and different from others
+        if (!originalAlreadyDefined && originalWidth && originalHeight) {
+             // Check if original resolution is significantly different from existing ones
+            const isDifferent = !targetResolutions.some(r => r.size === `${originalWidth}x${originalHeight}`);
+            if (isDifferent) {
+                targetResolutions.push({
+                    name: originalResName,
+                    size: `${originalWidth}x${originalHeight}`,
+                    bitrate: originalBitrateStr,
+                    isOriginal: true // Mark as original for potential codec copying
+                });
+                // Sort resolutions by height (numeric part of the name)
+                targetResolutions.sort((a, b) => parseInt(a.name) - parseInt(b.name));
+            } else {
+                 // If resolution exists, mark it as original if applicable
+                 const existingRes = targetResolutions.find(r => r.size === `${originalWidth}x${originalHeight}`);
+                 if (existingRes) existingRes.isOriginal = true;
+            }
         }
+         console.log(`[${videoId}] Target resolutions:`, targetResolutions.map(r => r.name));
 
-        // Usa la ruta del proxy en lugar de la estructura de Backblaze directamente
-        const proxyBaseUrl = `http://localhost:3000/stream-resource/${videoId}/`; // Ajusta a tu dominio real
-        let masterPlaylistContent = '#EXTM3U\n#EXT-X-VERSION:3\n';
-        const processingPromises = [];
 
-        // --- Process Each Resolution ---
-        targetResolutions.forEach(res => {
-            const resOutputDir = path.join(outputDir, res.name);
-            const playlistPath = path.join(resOutputDir, 'playlist.m3u8');
-            const bandwidth = parseInt(String(res.bitrate).replace('k', '')) * 1000 || 500000;
-            // Usa la ruta del proxy en el master.m3u8
-            masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${res.size}\n${proxyBaseUrl}${res.name}/playlist.m3u8\n`;
-
-            const promise = new Promise(async (resResolve, resReject) => {
-                await ensureDirExists(resOutputDir);
-
-                let command = ffmpeg(inputPath);
-
-                if (res.isOriginal) {
-                    console.log(`[${videoId}] Segmenting original resolution (${res.name}) by copying streams.`);
-                    command = command.outputOptions([
-                        '-c:v copy',
-                        '-c:a copy',
-                        '-hls_time 10',
-                        '-hls_playlist_type vod',
-                        `-hls_segment_filename ${path.join(resOutputDir, 'segment%03d.ts')}`
-                    ]);
-                } else {
-                    console.log(`[${videoId}] Re-encoding to ${res.name}.`);
-                    command = command.outputOptions([
-                        `-vf scale=${res.size}`,
-                        `-c:a aac`, `-ar 48000`, `-b:a 128k`,
-                        `-c:v h264`, `-profile:v main`, `-crf 20`, `-sc_threshold 0`,
-                        `-g 48`, `-keyint_min 48`,
-                        `-hls_time 10`, `-hls_playlist_type vod`,
-                        `-b:v ${res.bitrate}`,
-                        `-maxrate ${Math.floor(bandwidth * 1.2 / 1000)}k`,
-                        `-bufsize ${Math.floor(bandwidth * 1.5 / 1000)}k`,
-                        `-hls_segment_filename ${path.join(resOutputDir, 'segment%03d.ts')}`
-                    ]);
-                }
-
-                command
-                    .output(playlistPath)
-                    .on('start', (commandLine) => console.log(`[${videoId}] Started processing ${res.name}: ${commandLine}`))
-                    .on('progress', (progress) => {
-                        const percent = progress.percent === undefined ? 0 : progress.percent;
-                        console.log(`[${videoId}] Processing ${res.name}: ${percent.toFixed(2)}% done`);
-                    })
-                    .on('end', () => {
-                        console.log(`[${videoId}] Finished processing ${res.name}`);
-                        resResolve();
-                    })
-                    .on('error', (err) => {
-                        console.error(`[${videoId}] Error processing ${res.name}:`, err);
-                        resReject(err);
-                    })
-                    .run();
-            });
-            processingPromises.push(promise);
-        });
+        // --- Process Resolutions Concurrently ---
+        const processingPromises = targetResolutions.map(resInfo =>
+            processResolution(inputPath, outputDir, resInfo, options, videoId)
+        );
 
         try {
             const results = await Promise.allSettled(processingPromises);
-            const errors = results.filter(result => result.status === 'rejected');
+
+            // Filter out successful results and check for failures
+            const successfulResults = [];
+            const errors = [];
+            results.forEach(result => {
+                if (result.status === 'fulfilled') {
+                    successfulResults.push(result.value);
+                } else {
+                    errors.push(result.reason);
+                    console.error(`[${videoId}] A resolution processing task failed:`, result.reason.message || result.reason);
+                }
+            });
 
             if (errors.length > 0) {
-                errors.forEach(errorResult => {
-                    console.error(`[${videoId}] A resolution processing step failed:`, errorResult.reason);
-                });
-                throw new Error(`HLS conversion failed for one or more resolutions.`);
+                // Optionally, clean up partially created files here if needed
+                throw new Error(`HLS conversion failed for ${errors.length} resolution(s).`);
             }
 
-            const masterPlaylistPath = path.join(outputDir, 'master.m3u8');
-            const finalMasterPlaylistContent = masterPlaylistContent.endsWith('\n') ? masterPlaylistContent : masterPlaylistContent + '\n';
-            await fs.writeFile(masterPlaylistPath, finalMasterPlaylistContent);
+            if (successfulResults.length === 0) {
+                 throw new Error(`HLS conversion resulted in no successful resolutions.`);
+            }
+
+            // --- Create Master Playlist ---
+            const proxyBaseUrl = options.proxyBaseUrlTemplate.replace('{videoId}', videoId);
+            let masterPlaylistContent = '#EXTM3U\n#EXT-X-VERSION:3\n';
+
+            // Sort successful results by bandwidth before adding to master playlist
+            successfulResults.sort((a, b) => a.bandwidth - b.bandwidth);
+
+            successfulResults.forEach(res => {
+                masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${res.bandwidth},RESOLUTION=${res.size}\n`;
+                masterPlaylistContent += `${proxyBaseUrl}${res.playlistRelativePath}\n`; // Use relative path from helper
+            });
+
+            const masterPlaylistPath = path.join(outputDir, options.masterPlaylistName);
+            await fs.writeFile(masterPlaylistPath, masterPlaylistContent);
             console.log(`[${videoId}] Master playlist created successfully: ${masterPlaylistPath}`);
 
-            // Devuelve la URL del proxy en lugar de la URL directa de Backblaze
-            const proxyMasterUrl = `http://localhost:3000/stream/${videoId}`; // Ajusta a tu dominio real
-
+            // Resolve with the path to the master playlist or a relevant URL
             resolve({
                 message: 'HLS conversion successful',
-                masterPlaylistUrl: proxyMasterUrl
+                outputDir: outputDir, // Directory containing all HLS files
+                masterPlaylistPath: masterPlaylistPath, // Local path to master playlist
+                masterPlaylistUrl: `${proxyBaseUrl}${options.masterPlaylistName}` // URL via proxy
             });
+
         } catch (error) {
-            console.error(`[${videoId}] Error during HLS conversion:`, error);
-            reject(error);
+            console.error(`[${videoId}] Error during HLS conversion process:`, error.message);
+            // Attempt cleanup? Maybe remove outputDir if partially created?
+            // await fs.rm(outputDir, { recursive: true, force: true }).catch(e => console.error(`Cleanup failed: ${e.message}`));
+            reject(error); // Reject the main promise
         }
     });
 };
+
 module.exports = {
     ensureDirExists,
     convertToHls,
     // No longer exporting PROCESSED_DIR from here
     VIDEOS_DIR: VIDEOS_DIR_UTILS // Export the correctly defined path
 };
+/*
+// Ejemplo de uso con opciones personalizadas
+const customOptions = {
+    resolutions: [
+        { name: '360p', size: '640x360', bitrate: '500k' },
+        { name: '1080p', size: '1920x1080', bitrate: '3000k' }
+    ],
+    hlsTime: 6,
+    proxyBaseUrlTemplate: 'https://mycdn.com/stream/{videoId}/'
+};
+// En routes/b2.js, podrías llamar:
+// await convertToHls(originalTempPath, videoId, customOptions);
+// O simplemente:
+// await convertToHls(originalTempPath, videoId); // para usar las opciones por defecto
+*/
