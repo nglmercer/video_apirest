@@ -10,7 +10,7 @@ const ffmpeg = require('fluent-ffmpeg'); // Still needed for ffprobe in utils/hl
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 const axios = require("axios")
 // Import utils and routes
-const { ensureDirExists, VIDEOS_DIR } = require('./utils/hls'); // VIDEOS_DIR para asegurar directorio
+const { ensureDirExists, VIDEOS_DIR_ROOT } = require('./utils/hls'); // VIDEOS_DIR_ROOT para asegurar directorio
 const uploadRoutes = require('./routes/upload'); // Ruta para subida local y conversión HLS
 const videoRoutes = require('./routes/videos'); // Ruta para listar videos HLS locales
 const b2Routes = require('./routes/b2.js'); // Nuevas rutas para Backblaze B2
@@ -93,9 +93,9 @@ const startServer = async () => {
             process.exit(1); // Salir si la autorización falla
         }
         console.log("Backblaze B2 authorization successful.");
-
+        console.log("videosDir",VIDEOS_DIR_ROOT,"processedDirRoot",PROCESSED_DIR_ROOT)
         // 2. Asegurar directorios necesarios al inicio
-        await ensureDirExists(VIDEOS_DIR); // Directorio para videos originales subidos localmente
+        await ensureDirExists(VIDEOS_DIR_ROOT); // Directorio para videos originales subidos localmente
         await ensureDirExists(PROCESSED_DIR_ROOT); // Directorio para videos HLS procesados
         const tempDir = path.join(__dirname, 'temp_uploads'); // Directorio temporal para subidas a B2
          if (!fs.existsSync(tempDir)){

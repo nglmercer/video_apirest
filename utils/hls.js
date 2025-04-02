@@ -14,8 +14,8 @@ const VIDEOS_DIR_UTILS = path.join(PROJECT_ROOT, 'videos');
 // --- Default HLS Conversion Options ---
 const defaultHlsOptions = {
     resolutions: [
-        { name: '480p', size: '854x480', bitrate: '800k' },
-        // Add more resolutions like 1080p if needed
+/*         { name: '480p', size: '854x480', bitrate: '800k' },
+ */        // Add more resolutions like 1080p if needed
         // { name: '1080p', size: '1920x1080', bitrate: '2800k' }
     ],
     hlsTime: 10, // Segment duration in seconds
@@ -27,7 +27,7 @@ const defaultHlsOptions = {
     videoProfile: 'main',
     crf: 20, // Constant Rate Factor (lower means better quality, larger file)
     gopSize: 48, // Group of Pictures size (keyframe interval)
-    proxyBaseUrlTemplate: 'http://localhost:3000/stream-resource/{videoId}/', // Template for master playlist URLs
+    proxyBaseUrlTemplate: 'http://localhost:3000/stream-resource/{basePath}{videoId}/', // Template for master playlist URLs
     masterPlaylistName: 'master.m3u8',
     segmentNameTemplate: 'segment%03d.ts',
     resolutionPlaylistName: 'playlist.m3u8'
@@ -129,7 +129,7 @@ const processResolution = (inputPath, outputDir, resolutionInfo, commonOptions, 
 
 
 // --- Main HLS Conversion Function ---
-const convertToHls = (inputPath, videoId, userOptions = {}) => {
+const convertToHls = (inputPath, { videoId, basePath = '' }, userOptions = {}) => {
     return new Promise(async (resolve, reject) => {
         // Merge user options with defaults (shallow merge is usually sufficient)
         const options = { ...defaultHlsOptions, ...userOptions };
@@ -229,15 +229,18 @@ const convertToHls = (inputPath, videoId, userOptions = {}) => {
             }
 
             // --- Create Master Playlist ---
-            const proxyBaseUrl = options.proxyBaseUrlTemplate.replace('{videoId}', videoId);
+            const newbasePath = basePath ? basePath.endsWith('/') ? basePath : `${basePath}/` : '';
+            const proxyBaseUrl = options.proxyBaseUrlTemplate.replace('{videoId}', videoId).replace('{basePath}',newbasePath);
             let masterPlaylistContent = '#EXTM3U\n#EXT-X-VERSION:3\n';
 
             // Sort successful results by bandwidth before adding to master playlist
             successfulResults.sort((a, b) => a.bandwidth - b.bandwidth);
 
             successfulResults.forEach(res => {
+                const newrelativepath = `${proxyBaseUrl}${res.playlistRelativePath}\n`; // Use relative path from helper
                 masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${res.bandwidth},RESOLUTION=${res.size}\n`;
-                masterPlaylistContent += `${proxyBaseUrl}${res.playlistRelativePath}\n`; // Use relative path from helper
+                masterPlaylistContent += newrelativepath;
+                console.log("newrelativepath",newrelativepath)
             });
 
             const masterPlaylistPath = path.join(outputDir, options.masterPlaylistName);
@@ -265,7 +268,8 @@ module.exports = {
     ensureDirExists,
     convertToHls,
     // No longer exporting PROCESSED_DIR from here
-    VIDEOS_DIR: VIDEOS_DIR_UTILS // Export the correctly defined path
+    VIDEOS_DIR: VIDEOS_DIR_UTILS, // Export the correctly defined path
+    VIDEOS_DIR_ROOT: VIDEOS_DIR_UTILS
 };
 /*
 // Ejemplo de uso con opciones personalizadas

@@ -137,12 +137,17 @@ router.post('/upload-hls', (req, res, next) => {
             // 1. Convertir a HLS localmente
             // 1. Convertir a HLS localmente
             // Asegúrate de que convertToHls no necesite el token si no lo usa internamente
-            await convertToHls(originalTempPath, videoId);
+            await convertToHls(originalTempPath, { videoId, basePath: basePath });
             console.log(`[B2 HLS Upload] Conversión HLS completada para videoId: ${videoId}. Archivos en: ${hlsLocalOutputDir}`);
 
             // 2. Subir el directorio HLS completo a B2 usando la nueva función
             const bucketId = process.env.B2_BUCKET_ID;
             const b2Prefix = videoId; // Usar videoId como prefijo en B2
+            /*            res.status(200).json({
+                message: 'HLS conversion and upload to B2 completed successfully.',
+                videoId: videoId,
+                b2Prefix: finalB2Prefix,
+            });*/
             const uploadDirResult = await b2.uploadDirectoryToB2(bucketId, hlsLocalOutputDir, finalB2Prefix);
 
             // 3. Limpieza local (independientemente del éxito de la subida a B2)
