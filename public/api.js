@@ -69,3 +69,31 @@ export async function fetchVideos() {
         throw new Error(`Fallo al obtener la lista: ${error.message}`);
     }
 }
+export async function getFolders() {
+    console.log('[API] Obteniendo lista de carpetas...');
+    try {
+        const response = await fetch(`${API_BASE_URL}/b2/folder`);
+        console.log('[API] Respuesta de lista status:', response.status);
+
+        if (!response.ok) {
+            let errorData = {};
+            try {
+                 errorData = await response.json();
+            } catch(e) {
+                // Si el cuerpo no es JSON o está vacío
+                console.warn("[API] No se pudo parsear el cuerpo del error JSON");
+            }
+            console.error('[API] Datos del error al obtener lista:', errorData);
+            throw new Error(errorData.error?.message || errorData.error || `Fallo al obtener carpetas: ${response.status}`);
+        }
+        const folders = await response.json();
+        console.log('[API] Carpetas recibidas:', folders);
+        return folders;
+
+    } catch (error) {
+        console.error('[API] Error en fetchVideos:', error);
+         // Re-lanzar para que el llamador lo maneje
+        throw new Error(`Fallo al obtener la lista: ${error.message}`);
+    }
+}
+getFolders()

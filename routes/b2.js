@@ -124,6 +124,10 @@ router.post('/upload-hls', (req, res, next) => {
 
         const originalTempPath = req.file.path; // Ruta al video original temporal
         const videoId = path.basename(originalTempPath, path.extname(originalTempPath));
+        const basePath = req.body.basePath ? req.body.basePath.trim().replace(/^\/|\/$/g, '') : ''; // Limpiar slashes
+        console.log(`[B2 HLS Upload] Base path: ${basePath}`);
+        const finalB2Prefix = basePath ? `${basePath}/${videoId}` : videoId; // Construir prefijo final en B2
+        
         const hlsLocalOutputDir = path.join(PROCESSED_DIR_ROOT, videoId); // Directorio donde convertToHls guardará los archivos
 
         console.log(`[B2 HLS Upload] Video temporal recibido: ${originalTempPath}`);
@@ -139,7 +143,7 @@ router.post('/upload-hls', (req, res, next) => {
             // 2. Subir el directorio HLS completo a B2 usando la nueva función
             const bucketId = process.env.B2_BUCKET_ID;
             const b2Prefix = videoId; // Usar videoId como prefijo en B2
-            const uploadDirResult = await b2.uploadDirectoryToB2(bucketId, hlsLocalOutputDir, b2Prefix);
+            const uploadDirResult = await b2.uploadDirectoryToB2(bucketId, hlsLocalOutputDir, finalB2Prefix);
 
             // 3. Limpieza local (independientemente del éxito de la subida a B2)
             try {
@@ -152,14 +156,14 @@ router.post('/upload-hls', (req, res, next) => {
             }
 
             // 4. Responder al cliente
-            const mainManifestB2Path = `${b2Prefix}/master.m3u8`; // Usar el prefijo
+            const mainManifestB2Path = `${finalB2Prefix}/master.m3u8`; // Usar el prefijo
             const mainManifestUrl = `${b2.getDownloadUrl()}/file/${process.env.B2_BUCKET_NAME}/${encodeURIComponent(mainManifestB2Path)}`;
 
             if (!uploadDirResult.success) {
                  res.status(207).json({ // Multi-Status
                     message: `HLS conversion complete. ${uploadDirResult.successfulUploads.length} files uploaded to B2, ${uploadDirResult.failedUploads.length} failed.`,
                     videoId: videoId,
-                    b2Prefix: b2Prefix + '/',
+                    b2Prefix: finalB2Prefix + '/',
                     mainManifestUrl: mainManifestUrl,
                     uploadHistory: uploadDirResult.history // Incluir historial agrupado
                 });
@@ -167,7 +171,7 @@ router.post('/upload-hls', (req, res, next) => {
                  res.status(200).json({
                     message: 'HLS conversion and upload to B2 completed successfully.',
                     videoId: videoId,
-                    b2Prefix: b2Prefix + '/',
+                    b2Prefix: finalB2Prefix + '/',
                     mainManifestUrl: mainManifestUrl,
                     uploadHistory: uploadDirResult.history // Incluir historial agrupado
                 });

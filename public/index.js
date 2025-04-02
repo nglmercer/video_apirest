@@ -40,8 +40,9 @@ async function handleUploadSubmit(event) {
         console.error('[Main] No hay archivo seleccionado.');
         return;
     }
+    const basePathValue = "/videos"
     formData.append('video', UI.videoFile.files[0]);
-
+    formData.append('basePath', basePathValue); // Usa una clave descriptiva como 'basePath'
     try {
         const result = await API.uploadVideo(formData);
         // El resultado puede variar (éxito directo o aceptación 202)
