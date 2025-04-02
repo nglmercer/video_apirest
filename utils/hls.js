@@ -15,7 +15,6 @@ const VIDEOS_DIR_UTILS = path.join(PROJECT_ROOT, 'videos');
 const defaultHlsOptions = {
     resolutions: [
         { name: '480p', size: '854x480', bitrate: '800k' },
-        { name: '720p', size: '1280x720', bitrate: '1500k' }
         // Add more resolutions like 1080p if needed
         // { name: '1080p', size: '1920x1080', bitrate: '2800k' }
     ],

@@ -61,6 +61,26 @@ class BackblazeB2 {
   }
 
   /**
+   * Método para listar únicamente las "carpetas" virtuales en un bucket
+   * @param {string} bucketId - ID del bucket
+   * @param {string} folderPath - Ruta de la carpeta (prefijo) a listar
+   * @returns {Promise<Array>} - Array con la información de las carpetas encontradas
+   */
+  async listOnlyFolders(bucketId, folderPath = '') {
+    try {
+      const result = await this.listFolder(bucketId, folderPath);
+      // listFolder devuelve { folders: [], files: [] }
+      // Solo devolvemos el array de carpetas
+      return result.folders || []; 
+    } catch (error) {
+      // El error ya se maneja y loguea dentro de listFolder
+      // Devolvemos un array vacío en caso de error para mantener consistencia
+      console.error(`Error al listar solo carpetas en '${folderPath}':`, error.message);
+      return [];
+    }
+  }
+
+  /**
    * Método para listar buckets
    * @returns {Promise<Array>} - Array de buckets disponibles
    */
@@ -582,6 +602,7 @@ module.exports = {
   searchFilesByPrefix: (bucketId, prefix, maxFileCount) => defaultInstance.searchFilesByPrefix(bucketId, prefix, maxFileCount),
   searchFilesByName: (bucketId, fileName) => defaultInstance.searchFilesByName(bucketId, fileName),
   listFolder: (bucketId, folderPath) => defaultInstance.listFolder(bucketId, folderPath),
+  listOnlyFolders: (bucketId, folderPath) => defaultInstance.listOnlyFolders(bucketId, folderPath), // <-- Nuevo método añadido
   listVideoFiles: (bucketId, startFileName, maxFileCount, fileType) => defaultInstance.listVideoFiles(bucketId, startFileName, maxFileCount, fileType),
   listM3u8Files: (bucketId, startFileName, maxFileCount) => defaultInstance.listM3u8Files(bucketId, startFileName, maxFileCount),
   listMp4Files: (bucketId, startFileName, maxFileCount) => defaultInstance.listMp4Files(bucketId, startFileName, maxFileCount),
